@@ -1,0 +1,4 @@
+[submodule "external/ekascribe"]
+	path = external/ekascribe
+	url = https://github.com/eka-care/ekascribe.git
+	branch = main

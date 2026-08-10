@@ -1,0 +1,180 @@
+{
+  "name": "ekascribe",
+  "productName": "EkaScribe",
+  "version": "0.9.5",
+  "description": "My Electron application description",
+  "main": ".vite/build/main.js",
+  "private": true,
+  "build": {
+    "appId": "care.eka.ekascribe",
+    "compression": "maximum",
+    "electronLanguages": [
+      "en"
+    ],
+    "files": [
+      ".vite/**",
+      "build/icons/tray/**",
+      "package.json",
+      "electron.env",
+      "external/ekascribe-runtime/**",
+      "!**/node_modules/.cache{,/**}",
+      "!**/node_modules/@opentelemetry{,/**}"
+    ],
+    "protocols": {
+      "name": "EkaDoc Deep Link",
+      "schemes": [
+        "ekadoc"
+      ]
+    },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://updates.eka.care/ekascribe/latest/"
+      }
+    ],
+    "mac": {
+      "artifactName": "EkaScribe.${ext}",
+      "icon": "build/icons/icon.icns",
+      "hardenedRuntime": true,
+      "notarize": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Please allow microphone access to use the Eka Scribe feature.",
+        "NSScreenCaptureUsageDescription": "Please allow screen recording access to capture screen context and system audio for Eka Scribe Teleconsultation.",
+        "NSAudioCaptureUsageDescription": "Please allow system audio capture to include system sound in Eka Scribe recordings."
+      },
+      "extraResources": [
+        {
+          "from": "mac/build/Release/EkaCareDesktopHelper.app",
+          "to": "native/mac/EkaCareDesktopHelper.app",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ],
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "extraResources": [
+        {
+          "from": "windows/EkaDeskDocHelper/EkaDeskDocHelper/bin/Release/net10.0-windows/win-${arch}/publish",
+          "to": "native/windows/EkaDeskDocHelper",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ],
+      "artifactName": "EkaScribe Setup.${ext}",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/icons/icon.ico",
+      "verifyUpdateCodeSignature": false,
+      "signtoolOptions": {
+        "publisherName": "Eka Care",
+        "signingHashAlgorithms": [
+          "sha256"
+        ],
+        "sign": "scripts/windows/azure-sign.cjs"
+      }
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowElevation": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "EkaScribe",
+      "installerIcon": "build/icons/icon.ico",
+      "uninstallerIcon": "build/icons/icon.ico",
+      "include": "scripts/windows/nsis-uninstall-helper.nsh"
+    }
+  },
+  "scripts": {
+    "build:mac-helper": "node -e \"const cp=require('child_process');const fs=require('fs');const path=require('path');const buildRoot=path.resolve(process.cwd(),'mac/build');const symroot=buildRoot;const configDir=path.join(buildRoot,'Release');const derivedDataPath=path.join(buildRoot,'DerivedData');const helperAppPath=path.join(configDir,'EkaCareDesktopHelper.app');fs.rmSync(helperAppPath,{recursive:true,force:true});fs.rmSync(derivedDataPath,{recursive:true,force:true});cp.execFileSync('xcodebuild',['-project','mac/EkaCareDesktopHelper/EkaCareDesktopHelper.xcodeproj','-scheme','EkaCareDesktopHelper','-configuration','Release','build','-quiet','-derivedDataPath',derivedDataPath,'SYMROOT='+symroot,'CONFIGURATION_BUILD_DIR='+configDir],{stdio:'inherit'});\"",
+    "build:mac-helper:clean": "node -e \"const cp=require('child_process');const fs=require('fs');fs.rmSync('mac/build', {recursive:true, force:true});cp.execSync('npm run build:mac-helper', {stdio:'inherit'});\"",
+    "build:win-helper": "dotnet build windows/EkaDeskDocHelper/EkaDeskDocHelper/EkaDeskDocHelper.csproj -c Release -v minimal",
+    "build:win-helper:x64": "dotnet publish windows/EkaDeskDocHelper/EkaDeskDocHelper/EkaDeskDocHelper.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -v minimal",
+    "build:win-helper:arm64": "dotnet publish windows/EkaDeskDocHelper/EkaDeskDocHelper/EkaDeskDocHelper.csproj -c Release -r win-arm64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -v minimal",
+    "build:win-helper:all": "node -e \"const cp=require('child_process');cp.execSync('npm run build:win-helper:x64', {stdio:'inherit'});cp.execSync('npm run build:win-helper:arm64', {stdio:'inherit'});\"",
+    "build:ekascribe-web": "node -e \"const cp=require('child_process'),fs=require('fs');const nextDir='external/ekascribe/apps/web/.next';try{fs.rmSync(nextDir,{recursive:true,force:true})}catch(e){}const appSource=process.platform==='win32'?'electron-windows':'electron-mac';cp.execSync('npm run build --workspace apps/web',{stdio:'inherit',cwd:'external/ekascribe',env:{...process.env,EKASCRIBE_STATIC_EXPORT:'false',NEXT_PUBLIC_APP_SOURCE:appSource}});\"",
+    "build:ekascribe-web:static": "node -e \"const cp=require('child_process');const appSource=process.platform==='win32'?'electron-windows':'electron-mac';cp.execSync('npm run build --workspace apps/web',{stdio:'inherit',cwd:'external/ekascribe',env:{...process.env,EKASCRIBE_STATIC_EXPORT:'true',NEXT_PUBLIC_APP_SOURCE:appSource}});\"",
+    "prepare:ekascribe-runtime": "node scripts/prepare-ekascribe-runtime.cjs",
+    "prestart": "node -e \"if(process.platform==='darwin') require('child_process').execSync('npm run build:mac-helper', {stdio:'inherit'})\"",
+    "prepackage": "node -e \"const cp=require('child_process');if(process.platform==='win32')cp.execSync('npm run build:win-helper',{stdio:'inherit'});cp.execSync('node scripts/install-ekascribe-web.cjs',{stdio:'inherit'});cp.execSync('npm run build:ekascribe-web',{stdio:'inherit'});cp.execSync('npm run prepare:ekascribe-runtime',{stdio:'inherit'});\"",
+    "premake": "node -e \"const cp=require('child_process');if(process.platform==='win32') cp.execSync('npm run build:win-helper', {stdio:'inherit'});cp.execSync('npm run prepackage', {stdio:'inherit'});\"",
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "make:mac": "node -e \"const cp=require('child_process');const fs=require('fs');const path=require('path');const ef=path.resolve('electron.env');if(fs.existsSync(ef))fs.copyFileSync(ef,path.resolve('external/ekascribe/apps/web/.env.local'));const helperPath=path.resolve(process.cwd(),'mac/build/Release/EkaCareDesktopHelper.app');cp.execSync('npm run build:mac-helper:clean', {stdio:'inherit'});if(!fs.existsSync(helperPath)){throw new Error('Mac helper missing at '+helperPath);}cp.execSync('npm run package', {stdio:'inherit'});cp.execSync('electron-builder --mac dmg zip --config.mac.identity=null --config.mac.notarize=false', {stdio:'inherit', env:{...process.env, CSC_IDENTITY_AUTO_DISCOVERY:'false'}});\"",
+    "publish:forge": "electron-forge publish",
+    "publish": "node -e \"const cp=require('child_process');if(process.platform==='win32'){cp.execSync('npm run package', {stdio:'inherit'});cp.execSync('npm run build:win-helper:all', {stdio:'inherit'});cp.execSync('electron-builder --win nsis --x64 --arm64 --publish always', {stdio:'inherit', env:process.env});}else{cp.execSync('npm run publish:forge', {stdio:'inherit'});}\"",
+    "make:win": "node -e \"const cp=require('child_process'),fs=require('fs'),path=require('path');const ef=path.resolve('electron.env');if(fs.existsSync(ef))fs.copyFileSync(ef,path.resolve('external/ekascribe/apps/web/.env.local'));const pfx=path.resolve(process.cwd(),'certs','dev-code-signing.pfx');if(!fs.existsSync(pfx)){cp.execSync('powershell -ExecutionPolicy Bypass -File scripts/windows/create-dev-code-signing-cert.ps1',{stdio:'inherit'});}const pwd=process.env.CSC_KEY_PASSWORD||'dev-only-change-me';const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));const cfg=JSON.parse(JSON.stringify(pkg.build));cfg.win.signtoolOptions={sign:'scripts/windows/local-sign.cjs'};const tmp='.eb-local.json';fs.writeFileSync(tmp,JSON.stringify(cfg));try{cp.execSync('npm run package',{stdio:'inherit'});cp.execSync('npm run build:win-helper:all',{stdio:'inherit'});cp.execSync('electron-builder --win nsis --x64 --arm64 --config '+tmp,{stdio:'inherit',env:{...process.env,CSC_IDENTITY_AUTO_DISCOVERY:'false',CSC_LINK:pfx,CSC_KEY_PASSWORD:pwd}})}finally{try{fs.unlinkSync(tmp)}catch(e){}};\"",
+    "dist:win": "node -e \"const cp=require('child_process');cp.execSync('npm run package', {stdio:'inherit'});cp.execSync('npm run build:win-helper:all', {stdio:'inherit'});cp.execSync('electron-builder --win nsis --x64 --arm64', {stdio:'inherit', env:process.env});\"",
+    "dist:mac:update": "electron-builder --mac zip",
+    "publish:update": "node -e \"const cp=require('child_process');if(process.platform==='win32') cp.execSync('npm run build:win-helper:all', {stdio:'inherit'});cp.execSync('electron-builder --win nsis --x64 --arm64 --mac zip --publish always', {stdio:'inherit', env:process.env});\"",
+    "lint:tslint": "tslint -p tsconfig.tslint.json -c tslint.json",
+    "dist:mac": "node -e \"const cp=require('child_process');const fs=require('fs');const path=require('path');const helperPath=path.resolve(process.cwd(),'mac/build/Release/EkaCareDesktopHelper.app');cp.execSync('npm run build:mac-helper:clean', {stdio:'inherit'});if(!fs.existsSync(helperPath)){throw new Error('Mac helper missing at '+helperPath);}cp.execSync('npm run package', {stdio:'inherit'});cp.execSync('electron-builder --mac dmg zip', {stdio:'inherit'});\""
+  },
+  "config": {
+    "forge": "./forge.config.ts"
+  },
+  "keywords": [],
+  "author": {
+    "name": "Eka Care",
+    "email": "support@eka.care"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@electron-forge/cli": "^7.11.1",
+    "@electron-forge/maker-deb": "^7.11.1",
+    "@electron-forge/maker-rpm": "^7.11.1",
+    "@electron-forge/maker-squirrel": "^7.11.1",
+    "@electron-forge/maker-zip": "^7.11.1",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.11.1",
+    "@electron-forge/plugin-fuses": "^7.11.1",
+    "@electron-forge/plugin-vite": "^7.11.1",
+    "@electron/fuses": "^1.8.0",
+    "@types/electron-squirrel-startup": "^1.0.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@typescript-eslint/eslint-plugin": "^5.62.0",
+    "@typescript-eslint/parser": "^5.62.0",
+    "axios": "^1.13.6",
+    "axios-retry": "^4.5.0",
+    "electron": "40.8.0",
+    "electron-builder": "^26.0.12",
+    "electron-router-dom": "^2.1.1",
+    "electron-store": "^11.0.2",
+    "eslint": "^8.57.1",
+    "eslint-plugin-import": "^2.32.0",
+    "react-router-dom": "^7.13.1",
+    "tslint": "^5.20.1",
+    "tslint-react": "^4.1.0",
+    "typescript": "^5.9.3",
+    "uiohook-napi": "^1.5.4",
+    "vite": "^5.4.21"
+  },
+  "dependencies": {
+    "@eneris/push-receiver": "^4.3.1",
+    "@sentry/electron": "^7.10.0",
+    "@whiskeysockets/baileys": "^7.0.0-rc10",
+    "electron-squirrel-startup": "^1.0.1",
+    "electron-updater": "^6.8.3",
+    "input-otp": "^1.4.2",
+    "next-themes": "^0.4.6",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-hook-form": "^7.76.1"
+  }
+}

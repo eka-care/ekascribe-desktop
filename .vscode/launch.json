@@ -1,0 +1,20 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Forge: All",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "start"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/.vite/**/*.js"
+      ],
+      "sourceMaps": true,
+      "console": "integratedTerminal"
+    }
+  ]
+}

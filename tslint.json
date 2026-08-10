@@ -1,0 +1,24 @@
+{
+  "extends": ["tslint:recommended", "tslint-react"],
+  "linterOptions": {
+    "exclude": [
+      "node_modules/**",
+      "dist/**",
+      ".vite/**",
+      "**/*.d.ts"
+    ]
+  },
+  "rules": {
+    "arrow-parens": false,
+    "interface-name": false,
+    "object-literal-sort-keys": false,
+    "ordered-imports": false,
+    "member-access": [true, "no-public"],
+    "no-console": false,
+    "jsx-no-lambda": false,
+    "quotemark": [true, "single", "jsx-double", "avoid-escape"],
+    "trailing-comma": false,
+    "eofline": false,
+    "jsx-self-close": false
+  }
+}

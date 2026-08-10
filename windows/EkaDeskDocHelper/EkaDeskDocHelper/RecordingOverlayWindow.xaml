@@ -1,0 +1,276 @@
+<Window x:Class="EkaDeskDocHelper.RecordingOverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="DeskDocRecording"
+        SizeToContent="WidthAndHeight"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        AllowsTransparency="True"
+        Background="Transparent"
+        UseLayoutRounding="True"
+        ShowActivated="False"
+        Topmost="True"
+        ShowInTaskbar="False">
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Themes/OverlayShared.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <SolidColorBrush x:Key="OverlayCardBorderBrush" Color="#12FFFFFF" />
+            <SolidColorBrush x:Key="OverlayDangerBrush" Color="#FFE53935" />
+            <SolidColorBrush x:Key="OverlayPrimaryBrush" Color="#FF215FFF" />
+            <Style x:Key="OverlayIconButtonStyle" TargetType="{x:Type Button}">
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Padding" Value="0" />
+                <Setter Property="Cursor" Value="Hand" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="{x:Type Button}">
+                            <Border x:Name="Bd"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="10"
+                                    SnapsToDevicePixels="True">
+                                <ContentPresenter HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center"
+                                                  RecognizesAccessKey="True" />
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsEnabled" Value="False">
+                                    <Setter Property="Opacity" Value="0.55" />
+                                </Trigger>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="Opacity" Value="0.92" />
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter Property="Opacity" Value="0.80" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+            <Style x:Key="PauseGlyphStyle" TargetType="{x:Type Image}">
+                <Setter Property="Visibility" Value="Visible" />
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsPaused}" Value="True">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+            <Style x:Key="PlayGlyphStyle" TargetType="{x:Type Image}">
+                <Setter Property="Visibility" Value="Collapsed" />
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsPaused}" Value="True">
+                        <Setter Property="Visibility" Value="Visible" />
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+            <Style x:Key="OverlayCloseButtonStyle" TargetType="{x:Type Button}">
+                <Setter Property="Width" Value="18" />
+                <Setter Property="Height" Value="18" />
+                <Setter Property="FontSize" Value="10" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="Foreground" Value="#FF9CA3AF" />
+                <Setter Property="Background" Value="#FF000000" />
+                <Setter Property="BorderBrush" Value="#40FFFFFF" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="Cursor" Value="Hand" />
+                <Setter Property="Opacity" Value="0" />
+                <Setter Property="IsHitTestVisible" Value="False" />
+                <Setter Property="HorizontalAlignment" Value="Right" />
+                <Setter Property="VerticalAlignment" Value="Top" />
+                <Setter Property="Margin" Value="0,0,0,0" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="{x:Type Button}">
+                            <Border x:Name="Bd"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="9"
+                                    SnapsToDevicePixels="True">
+                                <ContentPresenter HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center" />
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#FF111111" />
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#FF1E1E1E" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsMouseOver, ElementName=Root}" Value="True">
+                        <Setter Property="Opacity" Value="1" />
+                        <Setter Property="IsHitTestVisible" Value="True" />
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <Grid>
+        <Grid x:Name="Root"
+              Margin="16"
+              Opacity="0"
+              RenderTransformOrigin="0.5,0.5"
+              SnapsToDevicePixels="True">
+            <Grid.RenderTransform>
+                <TranslateTransform x:Name="RootTranslate" Y="-10" />
+            </Grid.RenderTransform>
+            <Border x:Name="OverlayCardBorder"
+                    Background="White"
+                    CornerRadius="24"
+                    BorderBrush="{StaticResource OverlayCardBorderBrush}"
+                    BorderThickness="1"
+                    Effect="{StaticResource OverlayCardShadow}"
+                    SnapsToDevicePixels="True">
+                <Grid x:Name="PillClipHost">
+                    <StackPanel Orientation="{Binding LayoutOrientation}"
+                                Margin="8,4"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center">
+                        <!-- Drag handle: 3x3 dots, revealed on hover, hold to drag. -->
+                        <Border x:Name="DragHandle"
+                                Style="{StaticResource HoverRevealBorderStyle}"
+                                Background="Transparent"
+                                Cursor="SizeAll"
+                                Margin="2"
+                                Padding="2"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                ToolTip="Drag to move"
+                                MouseLeftButtonDown="DragHandle_MouseLeftButtonDown">
+                            <UniformGrid Rows="3" Columns="3" Width="14" Height="14">
+                                <Ellipse Width="3" Height="3" Margin="1" Fill="#FF9CA3AF" />
+                                <Ellipse Width="3" Height="3" Margin="1" Fill="#FF9CA3AF" />
+                                <Ellipse Width="3" Height="3" Margin="1" Fill="#FF9CA3AF" />
+                                <Ellipse Width="3" Height="3" Margin="1" Fill="#FF9CA3AF" />
+                                <Ellipse Width="3" Height="3" Margin="1" Fill="#FF9CA3AF" />
+                                <Ellipse Width="3" Height="3" Margin="1" Fill="#FF9CA3AF" />
+                                <Ellipse Width="3" Height="3" Margin="1" Fill="#FF9CA3AF" />
+                                <Ellipse Width="3" Height="3" Margin="1" Fill="#FF9CA3AF" />
+                                <Ellipse Width="3" Height="3" Margin="1" Fill="#FF9CA3AF" />
+                            </UniformGrid>
+                        </Border>
+
+                        <!-- Logo: opens / focuses the main app on click. -->
+                        <Button x:Name="LogoButton"
+                                Style="{StaticResource OverlayIconButtonStyle}"
+                                Width="28"
+                                Height="28"
+                                Margin="2"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                ToolTip="Open EkaScribe"
+                                Click="LogoButton_Click">
+                            <Viewbox Width="20" Height="20" Stretch="Uniform">
+                                <Grid Width="26" Height="24">
+                                    <Path Fill="#FF215FFF"
+                                          Data="M13.0848 7.43945C12.7027 7.43945 12.3928 7.74899 12.3928 8.13146V13.6675C12.3928 14.05 12.7027 14.3595 13.0848 14.3595C13.4669 14.3595 13.7768 14.05 13.7768 13.6675V8.13146C13.7768 7.74899 13.4669 7.43945 13.0848 7.43945ZM17.2368 9.51547C16.8547 9.51547 16.5448 9.825 16.5448 10.2075V11.5915C16.5448 11.974 16.8547 12.2835 17.2368 12.2835C17.619 12.2835 17.9288 11.974 17.9288 11.5915V10.2075C17.9288 9.825 17.619 9.51547 17.2368 9.51547ZM8.93279 9.51547C8.55066 9.51547 8.24078 9.825 8.24078 10.2075V11.5915C8.24078 11.974 8.55066 12.2835 8.93279 12.2835C9.31491 12.2835 9.62479 11.974 9.62479 11.5915V10.2075C9.62479 9.825 9.31491 9.51547 8.93279 9.51547ZM15.1608 8.82346C14.7787 8.82346 14.4688 9.133 14.4688 9.51547V12.2835C14.4688 12.666 14.7787 12.9755 15.1608 12.9755C15.543 12.9755 15.8528 12.666 15.8528 12.2835V9.51547C15.8528 9.133 15.543 8.82346 15.1608 8.82346ZM11.0088 8.82346C10.6267 8.82346 10.3168 9.133 10.3168 9.51547V12.2835C10.3168 12.666 10.6267 12.9755 11.0088 12.9755C11.3909 12.9755 11.7008 12.666 11.7008 12.2835V9.51547C11.7008 9.133 11.3909 8.82346 11.0088 8.82346Z" />
+                                    <Path Fill="#FF215FFF"
+                                          Data="F0 M25.386 13.3232C25.3445 14.8567 25.0136 16.3183 24.4377 17.7275L24.3098 18.0283L24.3088 18.0312C23.6091 19.5747 22.623 20.8977 21.3547 22.0303L21.3528 22.0322C20.8068 22.5098 20.1278 22.8965 19.4084 23.0625L19.2815 23.0977C18.9691 23.1728 18.5401 23.1963 18.1574 23.1963L18.1457 23.1963C17.0244 23.1337 15.9652 22.6608 15.1711 21.8682L15.1721 21.8672L13.0979 19.8125L10.9729 21.8682L10.8078 22.0244C9.08028 23.5869 6.60778 23.5981 4.83616 22.0303L4.83518 22.0303C3.56476 20.8968 2.57908 19.5425 1.88011 18.0322C1.14779 16.4555 0.799051 14.7541 0.799051 12.9932C0.796182 11.3613 1.11999 9.74531 1.75218 8.24023L1.75315 8.2373C2.38784 6.79136 3.2766 5.46883 4.38987 4.36621C5.53237 3.23431 6.83501 2.35174 8.29905 1.75293L8.30003 1.75293C9.8243 1.1237 11.4437 0.809613 13.094 0.80957C14.7448 0.80957 16.3644 1.1243 17.8899 1.75391L17.8928 1.75488C19.3519 2.38341 20.6859 3.2639 21.7991 4.36621C22.9408 5.49862 23.8318 6.79011 24.4367 8.24023C25.0691 9.74548 25.3929 11.362 25.3899 12.9941L25.386 13.3232ZM22.7366 12.9629C22.7365 10.4173 21.7282 8.05251 19.9192 6.23145C18.1132 4.44277 15.6955 3.44239 13.1242 3.44238C10.5534 3.44241 8.16577 4.44316 6.32737 6.23437L6.32737 6.2334C4.52237 8.02269 3.51292 10.4177 3.51292 12.9639C3.51296 14.3288 3.78856 15.6307 4.36936 16.8721L4.36936 16.873C4.92037 18.0573 5.68634 19.1185 6.66526 19.9971C7.39855 20.6379 8.49798 20.6099 9.20432 19.9385L9.20432 19.9375L10.4875 18.6436C9.50673 17.7755 8.35906 16.7131 7.61546 16.0186C7.48484 15.8964 7.38303 15.7461 7.31858 15.5791C7.25415 15.4119 7.22841 15.2314 7.24241 15.0527C7.25646 14.8742 7.30987 14.7007 7.39964 14.5459C7.48937 14.3912 7.61374 14.2598 7.76194 14.1602L7.76096 14.1592C7.97482 14.0149 8.23037 13.9461 8.48753 13.9639C8.74464 13.9817 8.98857 14.0849 9.18089 14.2568C9.76818 14.7826 10.7911 15.6722 11.6711 16.4336C12.1106 16.8138 12.5137 17.1622 12.8088 17.416C12.918 17.51 13.0133 17.5903 13.0891 17.6553C13.1647 17.5904 13.2586 17.5096 13.3674 17.416C13.6625 17.1622 14.0664 16.8139 14.5061 16.4336C15.3859 15.6724 16.4081 14.7838 16.9953 14.2578C17.1878 14.0855 17.4322 13.9808 17.6897 13.9629C17.947 13.9451 18.2023 14.0148 18.4162 14.1592L18.5227 14.2393C18.6242 14.3258 18.7102 14.4298 18.7776 14.5459C18.8673 14.7007 18.9217 14.8742 18.9358 15.0527C18.9498 15.2314 18.9231 15.4119 18.8586 15.5791C18.7942 15.746 18.6932 15.8965 18.5627 16.0186C17.8297 16.7033 16.7042 17.7463 15.7326 18.6074L17.0774 19.9414C17.4429 20.3035 17.8912 20.4717 18.4055 20.4717C18.8556 20.4717 19.2732 20.3042 19.5774 20.0029L19.5842 19.9961L19.5852 19.9961C20.5617 19.1185 21.3265 18.0586 21.8782 16.876L22.0735 16.4053C22.5021 15.302 22.7366 14.1549 22.7366 12.9629Z" />
+                                </Grid>
+                            </Viewbox>
+                        </Button>
+
+                        <Border Width="32"
+                                Height="32"
+                                CornerRadius="16"
+                                Margin="2"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                ClipToBounds="True"
+                                Background="Transparent">
+                            <Image x:Name="RecordingGifImage"
+                                   Stretch="Uniform"
+                                   SnapsToDevicePixels="True" />
+                        </Border>
+
+                        <Button Style="{StaticResource OverlayControlButtonStyle}"
+                                Width="28"
+                                Height="28"
+                                Margin="2"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Command="{Binding PauseCommand}">
+                            <Grid Width="24" Height="24">
+                                <Image Source="pack://application:,,,/Assets/ic_pause.png"
+                                       Width="24"
+                                       Height="24"
+                                       Stretch="Uniform"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       Style="{StaticResource PauseGlyphStyle}" />
+                                <Image Source="pack://application:,,,/Assets/ic_play.png"
+                                       Width="24"
+                                       Height="24"
+                                       Stretch="Uniform"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       Style="{StaticResource PlayGlyphStyle}" />
+                            </Grid>
+                        </Button>
+
+                        <Button Style="{StaticResource OverlayControlButtonStyle}"
+                                Width="28"
+                                Height="28"
+                                Margin="2"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Command="{Binding StopCommand}">
+                            <Image Source="pack://application:,,,/Assets/ic_stop.png"
+                                   Width="24"
+                                   Height="24"
+                                   Stretch="Uniform"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center" />
+                        </Button>
+
+                        <!-- Orientation toggle: revealed on hover. -->
+                        <Border Style="{StaticResource HoverRevealBorderStyle}"
+                                Background="Transparent"
+                                Margin="2"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center">
+                            <Button x:Name="OrientationToggleButton"
+                                    Style="{StaticResource OverlayIconButtonStyle}"
+                                    Width="24"
+                                    Height="24"
+                                    ToolTip="Toggle horizontal / vertical"
+                                    Click="OrientationToggleButton_Click">
+                                <Viewbox Width="12" Height="12">
+                                    <Path Data="M2,5 H10 M2,5 L4,3 M2,5 L4,7 M10,9 H2 M10,9 L8,7 M10,9 L8,11"
+                                          Stroke="#FF6B7280"
+                                          StrokeThickness="1"
+                                          StrokeStartLineCap="Round"
+                                          StrokeEndLineCap="Round"
+                                          SnapsToDevicePixels="True" />
+                                </Viewbox>
+                            </Button>
+                        </Border>
+                    </StackPanel>
+                </Grid>
+            </Border>
+            <Button Style="{StaticResource OverlayCloseButtonStyle}"
+                    Click="CloseOverlayButton_Click"
+                    ToolTip="Dismiss overlay">
+                <Viewbox Width="8" Height="8" Stretch="Fill">
+                    <Path Data="M 1,1 L 7,7 M 7,1 L 1,7"
+                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                          StrokeThickness="1.5"
+                          StrokeStartLineCap="Round"
+                          StrokeEndLineCap="Round"
+                          SnapsToDevicePixels="True" />
+                </Viewbox>
+            </Button>
+        </Grid>
+    </Grid>
+</Window>
