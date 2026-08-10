@@ -9,6 +9,7 @@ import {
   isLogoutInProgress,
 } from './authManager';
 import { captureError, addBreadcrumb } from './sentryManager';
+import { getApiUpstreamBase } from '../config';
 
 type ConnectAuthRefreshResponse = {
   access_token?: string;
@@ -71,8 +72,15 @@ async function refreshTokenOnMain(ekaHost: string, clientId: string): Promise<Re
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REFRESH_TIMEOUT_MS);
   try {
-    const response = await (net.fetch as Function)(
+    // ekaHost is '' for same-origin ekascribe-web builds. Resolve against the real upstream
+    // rather than the Express proxy: the proxy retries 401s by calling this refresher, so
+    // routing the refresh back through it would recurse.
+    const refreshUrl = new URL(
       `${ekaHost}/connect-auth/v1/account/refresh-token`,
+      getApiUpstreamBase(),
+    ).toString();
+    const response = await (net.fetch as Function)(
+      refreshUrl,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'client-id': clientId, auth: getAuthToken() },

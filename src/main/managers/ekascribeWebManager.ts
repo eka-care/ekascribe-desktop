@@ -8,6 +8,16 @@ const EKASCRIBE_WEB_PORT = 3876;
 const EKASCRIBE_WEB_HOST = '127.0.0.1';
 const EKASCRIBE_WEB_URL = `http://${EKASCRIBE_WEB_HOST}:${EKASCRIBE_WEB_PORT}`;
 
+/**
+ * Origin the embedded web app is served from. ekascribe-web builds same-origin *relative*
+ * API URLs (`HOSTS.EKA_HOST === ''`); in a browser those resolve against the page origin,
+ * but requests routed over IPC reach the main process with no origin attached, so callers
+ * must resolve them against this base before handing them to `net.fetch`.
+ */
+export function getEkascribeWebOrigin(): string {
+  return EKASCRIBE_WEB_URL;
+}
+
 type NextAppLike = {
   prepare: () => Promise<void>;
   getRequestHandler: () => (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => Promise<void> | void;
@@ -292,7 +302,7 @@ function loadEnvFile(filePath: string): Record<string, string> {
   return result;
 }
 
-function injectElectronEnv(): void {
+export function injectElectronEnv(): void {
   const vars = loadEnvFile(path.join(appRootPath(), 'electron.env'));
   for (const [k, v] of Object.entries(vars)) {
     if (!(k in process.env)) process.env[k] = v;

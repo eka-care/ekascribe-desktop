@@ -46,6 +46,11 @@ import {
   stopEkascribeWeb,
 } from './managers/ekascribeWebManager';
 import { registerNetworkIpcHandlers } from './managers/networkManager';
+import {
+  registerApiProxyIpcHandlers,
+  startApiProxy,
+  stopApiProxy,
+} from './managers/apiProxyManager';
 import { registerWhatsappIpcHandlers, initWhatsAppAutoConnect } from './managers/whatsappManager';
 import { registerPdfIpcHandlers } from './managers/pdfManager';
 import { registerNotificationIpcHandlers, showNotification, showPermissionPromptIfNeeded } from './managers/notificationManager';
@@ -709,6 +714,8 @@ const createWindow = async () => {
 
   if (isAuthenticated) {
     try {
+      // Idempotent — a no-op unless the `ready` handler's start failed or was skipped.
+      await startApiProxy();
       const ekascribeWebUrl = await startEkascribeWeb();
       addBreadcrumb('navigation', 'ekascribe_web_server_started', { url: ekascribeWebUrl });
       await mainWindow.loadURL(ekascribeWebUrl);
@@ -1220,6 +1227,15 @@ app.on('ready', async () => {
     appPath: app.getAppPath(),
   });
   registerProxyProtocolHandler();
+  // Must be listening before any window loads: the embedded web app addresses it for
+  // every backend call from its very first render.
+  try {
+    const apiProxyOrigin = await startApiProxy();
+    addBreadcrumb('infra', 'api_proxy_started', { origin: apiProxyOrigin });
+  } catch (error) {
+    captureError(error, { domain: 'infra', component: 'api_proxy', extra: { action: 'start' } });
+    console.error('[main] failed to start API proxy:', error);
+  }
   setupAutoUpdates(logOverlayHelper, () => mainWindowRef);
   // setTimeout(() => { // mock auto update check function
   //   isUpdateAvailable = true;
@@ -1240,6 +1256,7 @@ app.on('ready', async () => {
   registerNativeBottomViewIpcHandlers();
   registerRecordingIpcHandlers();
   registerEkascribeWebIpcHandlers();
+  registerApiProxyIpcHandlers();
   registerNetworkIpcHandlers();
   registerWhatsappIpcHandlers();
   registerPdfIpcHandlers();
@@ -1733,6 +1750,7 @@ app.on('will-quit', () => {
   tray = null;
   removeOwnerPidFile();
   unregisterProxyProtocolHandler();
+  void stopApiProxy();
   void stopEkascribeWeb();
   cancelDeferredHelperRestart();
   // Stdio bridge ties helper lifecycle to Electron: tear them down explicitly

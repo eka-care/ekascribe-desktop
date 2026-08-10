@@ -176,6 +176,22 @@ contextBridge.exposeInMainWorld('ekascribeWebApi', {
   getUrl: () => ipcRenderer.invoke('ekascribe-web:url'),
 });
 
+// Read synchronously: ekascribe-web builds its host table while its config module is
+// evaluated, before any async IPC could resolve. Empty string if the proxy failed to start,
+// which leaves the web app on its same-origin defaults.
+let apiProxyOrigin = '';
+try {
+  apiProxyOrigin = ipcRenderer.sendSync('api-proxy:originSync') ?? '';
+} catch {
+  // best-effort; getOrigin() below remains as an async fallback
+}
+
+contextBridge.exposeInMainWorld('apiProxyApi', {
+  /** Origin of the main-process Express proxy — every backend call must target it. */
+  origin: apiProxyOrigin,
+  getOrigin: () => ipcRenderer.invoke('api-proxy:origin'),
+});
+
 contextBridge.exposeInMainWorld('networkApi', {
   request: (payload: {
     url: string;

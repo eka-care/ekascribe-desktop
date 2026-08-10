@@ -1,6 +1,6 @@
 import { ipcMain, net, session } from 'electron';
 import { getAuthToken } from './authManager';
-import { refreshConnectAuthTokensDeduped } from './connectAuthRefresh';
+import { getApiProxyOrigin } from './apiProxyManager';
 
 export interface NetworkRequestPayload {
   url: string;
@@ -20,7 +20,6 @@ export interface NetworkResponsePayload {
 }
 
 const DEFAULT_CLIENT_ID = 'doc-web';
-const FLAVOUR = process.platform === 'win32' ? 'ekascribe-desktop-windows' : 'ekascribe-desktop-mac';
 const REQUEST_TIMEOUT_MS = 15000;
 
 // Sentinel returned when the request never reached the server (offline / timeout).
@@ -33,6 +32,21 @@ const NETWORK_ERROR_RESPONSE: NetworkResponsePayload = {
   headers: {},
   body: '',
 };
+
+/**
+ * Renderer callers may pass a relative URL ('/connect-auth/...'). The renderer would resolve
+ * it against its page origin, but by the time it arrives here over IPC there is no origin
+ * left and `net.fetch` rejects with "Failed to parse URL". Resolve against the Express API
+ * proxy, which is where the embedded web app's absolute URLs already point.
+ */
+function toAbsoluteUrl(url: string): string {
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) return url;
+  try {
+    return new URL(url, getApiProxyOrigin()).toString();
+  } catch {
+    return url;
+  }
+}
 
 function redactHeaders(headers: Record<string, string>): Record<string, string> {
   const sanitized: Record<string, string> = { ...headers };
@@ -84,28 +98,26 @@ async function handleNetworkRequest(
   _event: Electron.IpcMainInvokeEvent,
   payload: NetworkRequestPayload,
 ): Promise<NetworkResponsePayload> {
-  const { url, method, headers, body, retry, ekaHost } = payload;
+  const { method, headers, body, retry } = payload;
+  const url = toAbsoluteUrl(payload.url);
+  const viaProxy = isProxyTarget(url);
+
   console.log('[networkManager] request', {
     method,
     url,
+    viaProxy,
     retry,
     hasBody: body !== null,
     bodyLength: body?.length ?? 0,
     headers: redactHeaders(headers),
   });
 
-  if (!headers['auth']) {
-    const authToken = getAuthToken();
-    if (authToken) {
-      headers['auth'] = authToken;
-    }
-  }
-
-  if (!headers['client-id']) {
+  // Backend calls go through the Express proxy, which owns credential injection and the
+  // 401 refresh-and-retry. Requests to third-party hosts (presigned upload URLs and the
+  // like) are forwarded untouched — attaching the session token to them would leak it.
+  if (viaProxy && !headers['client-id']) {
     headers['client-id'] = DEFAULT_CLIENT_ID;
   }
-
-  headers['flavour'] = FLAVOUR;
 
   let response: Response;
   try {
@@ -128,35 +140,18 @@ async function handleNetworkRequest(
     status_code: response.status,
     ok: response.ok,
     retry,
-    retried: false,
   });
 
-  if (response.status === 401 && retry) {
-    const clientId = headers['client-id'] || DEFAULT_CLIENT_ID;
-    console.warn('[networkManager] 401 received, attempting refresh+retry', { method, url, clientId });
-    const { ok: refreshed } = await refreshConnectAuthTokensDeduped(ekaHost, clientId);
-    console.log('[networkManager] refresh result', { method, url, refreshed });
-
-    if (refreshed) {
-      const freshToken = getAuthToken();
-      if (freshToken) {
-        headers['auth'] = freshToken;
-      }
-      try {
-        const retryResponse = await executeRequest(url, method, headers, body);
-        return serializeResponse(retryResponse);
-      } catch (error) {
-        console.warn('[networkManager] retry request failed (network/timeout)', {
-          method,
-          url,
-          error: String(error),
-        });
-        return NETWORK_ERROR_RESPONSE;
-      }
-    }
-  }
-
   return serializeResponse(response);
+}
+
+/** True when the request is bound for the main-process Express proxy. */
+function isProxyTarget(url: string): boolean {
+  try {
+    return new URL(url).origin === getApiProxyOrigin();
+  } catch {
+    return false;
+  }
 }
 
 export function registerNetworkIpcHandlers(): void {
