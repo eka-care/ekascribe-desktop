@@ -16,11 +16,9 @@ import {
   exitPipModeToRoute,
   sendLoginPipState,
 } from './loginWindowManager';
+import { FORCE_AUTHENTICATED } from '../config';
 
 const store = new ElectronStore();
-// DEBUG ONLY — mirrors FORCE_AUTHENTICATED in main.ts. While set, ekascribe-web's
-// auto-logout on 401 is ignored so the forced session isn't bounced to the auth page.
-const FORCE_AUTHENTICATED = !app.isPackaged && process.env.FORCE_AUTH === '1';
 const UNENCRYPTED_PREFIX = 'plain:';
 // TODO: enable safeStorage on macOS too — tokens are currently stored as plaintext in electron-store on macOS
 const USE_SAFE_STORAGE = process.platform !== 'darwin';
@@ -534,7 +532,7 @@ async function loadElectronAuthPage(sender: WebContents): Promise<void> {
   // Chokepoint for every navigation to the native login screen — hard-stop under FORCE_AUTH
   // so no current or future caller can bounce a forced session back to auth.
   if (FORCE_AUTHENTICATED) {
-    console.warn('[auth] FORCE_AUTH=1 — suppressing navigation to login screen');
+    console.warn('[auth] FORCE_AUTH — suppressing navigation to login screen');
     return;
   }
   // Prevent concurrent logout navigations from racing and aborting each other.
@@ -724,7 +722,7 @@ export function registerAuthIpcHandlers(onAuthStateChanged?: () => void): void {
 
   ipcMain.handle('auth:logout', async (event) => {
     if (FORCE_AUTHENTICATED) {
-      console.warn('[auth] FORCE_AUTH=1 — ignoring logout request');
+      console.warn('[auth] FORCE_AUTH — ignoring logout request');
       return;
     }
     _logoutInProgress = true;

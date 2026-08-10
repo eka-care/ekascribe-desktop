@@ -57,6 +57,7 @@ import { ChildProcess, spawnSync } from 'node:child_process';
 import { NativeBridge } from './nativeCommunication/NativeBridge';
 import { attach as attachFocusTracker, detach as detachFocusTracker } from './focusTracker';
 import ElectronStore from 'electron-store';
+import { FORCE_AUTHENTICATED } from './config';
 
 initMainSentry();
 
@@ -88,10 +89,6 @@ const scribeCommandAckTimers = new Map<string, NodeJS.Timeout>();
 const scribeCommandRetryCount = new Map<string, number>();
 const SCRIBE_COMMAND_ACK_TIMEOUT_MS = 1200;
 const SCRIBE_COMMAND_MAX_RETRIES = 2;
-
-// DEBUG ONLY — forces the window to load ekascribe-web even with no stored tokens.
-// Set FORCE_AUTH=1 when running `npm start`. Never enabled in packaged builds.
-const FORCE_AUTHENTICATED = !app.isPackaged && process.env.FORCE_AUTH === '1';
 
 const DEEP_LINK_PROTOCOL = 'ekadoc';
 const MAIN_WINDOW_MIN_WIDTH = 1024;
@@ -701,7 +698,7 @@ const createWindow = async () => {
   const refreshToken = getRefreshToken();
   const isAuthenticated = FORCE_AUTHENTICATED || (!!authToken && !!refreshToken);
   if (FORCE_AUTHENTICATED) {
-    console.warn('[main] FORCE_AUTH=1 — bypassing token check and loading ekascribe-web');
+    console.warn('[main] FORCE_AUTH — bypassing token check and loading ekascribe-web');
   }
   const loadTarget = isAuthenticated ? 'ekascribe-web' : 'renderer';
   const windowLoadStartMs = Date.now();
@@ -743,7 +740,7 @@ const createWindow = async () => {
   // Under FORCE_AUTH the renderer fallback is the login screen, which defeats the flag.
   // Surface the ekascribe-web failure instead of silently landing on auth.
   if (!loaded && FORCE_AUTHENTICATED) {
-    console.error('[main] FORCE_AUTH=1 — ekascribe-web failed to load; not falling back to login');
+    console.error('[main] FORCE_AUTH — ekascribe-web failed to load; not falling back to login');
     await mainWindow.loadURL(
       'data:text/html,' +
       encodeURIComponent(
