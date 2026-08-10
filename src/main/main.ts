@@ -89,6 +89,10 @@ const scribeCommandRetryCount = new Map<string, number>();
 const SCRIBE_COMMAND_ACK_TIMEOUT_MS = 1200;
 const SCRIBE_COMMAND_MAX_RETRIES = 2;
 
+// DEBUG ONLY — forces the window to load ekascribe-web even with no stored tokens.
+// Set FORCE_AUTH=1 when running `npm start`. Never enabled in packaged builds.
+const FORCE_AUTHENTICATED = !app.isPackaged && process.env.FORCE_AUTH === '1';
+
 const DEEP_LINK_PROTOCOL = 'ekadoc';
 const MAIN_WINDOW_MIN_WIDTH = 1024;
 const MAIN_WINDOW_MIN_HEIGHT = 660;
@@ -695,7 +699,10 @@ const createWindow = async () => {
 
   const authToken = getAuthToken();
   const refreshToken = getRefreshToken();
-  const isAuthenticated = !!authToken && !!refreshToken;
+  const isAuthenticated = FORCE_AUTHENTICATED || (!!authToken && !!refreshToken);
+  if (FORCE_AUTHENTICATED) {
+    console.warn('[main] FORCE_AUTH=1 — bypassing token check and loading ekascribe-web');
+  }
   const loadTarget = isAuthenticated ? 'ekascribe-web' : 'renderer';
   const windowLoadStartMs = Date.now();
 
@@ -731,6 +738,20 @@ const createWindow = async () => {
     }
   } else {
     console.log('[main] no auth/refresh token — showing login screen');
+  }
+
+  // Under FORCE_AUTH the renderer fallback is the login screen, which defeats the flag.
+  // Surface the ekascribe-web failure instead of silently landing on auth.
+  if (!loaded && FORCE_AUTHENTICATED) {
+    console.error('[main] FORCE_AUTH=1 — ekascribe-web failed to load; not falling back to login');
+    await mainWindow.loadURL(
+      'data:text/html,' +
+      encodeURIComponent(
+        '<body style="font:14px system-ui;padding:32px"><h2>FORCE_AUTH debug mode</h2>' +
+        '<p>ekascribe-web failed to start. Login fallback is suppressed — check the main-process console.</p></body>'
+      )
+    );
+    loaded = true;
   }
 
   if (!loaded) {
