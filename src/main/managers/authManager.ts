@@ -823,6 +823,12 @@ export function registerAuthIpcHandlers(onAuthStateChanged?: () => void): void {
       });
       // Restore the window maximized before onAuthSuccess loads ekascribe-web.
       exitPipModeToRoute('/main/', { maximize: true });
+      // Pull the app in front of the browser; the ekadoc:// redirect alone is prompt-gated.
+      if (win && !win.isDestroyed()) {
+        win.show();
+        win.focus();
+      }
+      app.focus({ steal: true });
       return result;
     } catch (e) {
       logLogin('ipc auth:startOidcLogin FAILED', { error: toErrorMessage(e) });
