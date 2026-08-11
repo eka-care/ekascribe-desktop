@@ -6,6 +6,8 @@ import {
   API_PROXY_HOST,
   API_PROXY_ORIGIN,
   API_PROXY_PORT,
+  DISABLE_API_PROXY,
+  ELECTRON_API_ORIGIN,
   getApiUpstreamBase,
 } from '../config';
 import { getAuthToken } from './authManager';
@@ -100,6 +102,9 @@ let startPromise: Promise<string> | null = null;
 
 /** Origin the embedded web app and the renderer should address for all backend calls. */
 export function getApiProxyOrigin(): string {
+  if (DISABLE_API_PROXY) {
+    return getApiUpstreamBase();
+  }
   return API_PROXY_ORIGIN;
 }
 
@@ -107,12 +112,19 @@ export function registerApiProxyIpcHandlers(): void {
   // Synchronous so `preload` can hand the origin to the page before any app script runs
   // (ekascribe-web reads it while evaluating its host table at module load).
   ipcMain.on('api-proxy:originSync', (event) => {
-    event.returnValue = API_PROXY_ORIGIN;
+    event.returnValue = getApiProxyOrigin();
   });
-  ipcMain.handle('api-proxy:origin', () => API_PROXY_ORIGIN);
+  ipcMain.handle('api-proxy:origin', () => getApiProxyOrigin());
 }
 
 export async function startApiProxy(): Promise<string> {
+  if (DISABLE_API_PROXY) {
+    injectElectronEnv();
+    const upstream = getApiUpstreamBase();
+    console.warn(`[apiProxy] DISABLED — traffic goes direct to ${upstream}`);
+    return upstream;
+  }
+
   if (proxyServer?.listening) {
     return API_PROXY_ORIGIN;
   }
@@ -333,6 +345,8 @@ function buildUpstreamHeaders(req: Request): Record<string, string> {
     headers['client-id'] = DEFAULT_CLIENT_ID;
   }
   headers.flavour = FLAVOUR;
+  // Browser Origin would be the loopback Next origin; upstream expects the desktop scheme.
+  headers.origin = ELECTRON_API_ORIGIN;
 
   return headers;
 }

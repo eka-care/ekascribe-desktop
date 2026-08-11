@@ -44,6 +44,9 @@ import {
   registerEkascribeWebIpcHandlers,
   startEkascribeWeb,
   stopEkascribeWeb,
+  getEkascribeAppOrigin,
+  registerEkascribeAppSchemePrivileges,
+  registerEkascribeAppProtocol,
 } from './managers/ekascribeWebManager';
 import { registerNetworkIpcHandlers } from './managers/networkManager';
 import {
@@ -62,9 +65,51 @@ import { ChildProcess, spawnSync } from 'node:child_process';
 import { NativeBridge } from './nativeCommunication/NativeBridge';
 import { attach as attachFocusTracker, detach as detachFocusTracker } from './focusTracker';
 import ElectronStore from 'electron-store';
-import { FORCE_AUTHENTICATED } from './config';
+import { FORCE_AUTHENTICATED, getApiUpstreamBase } from './config';
 
 initMainSentry();
+
+// Before `ready`, by requirement: Chromium reads the scheme privilege table during startup.
+registerEkascribeAppSchemePrivileges();
+
+/**
+ * The upstream API currently presents a self-signed certificate, which Chromium rejects with
+ * ERR_CERT_AUTHORITY_INVALID before CORS is ever evaluated — and a subresource fetch gets no
+ * click-through interstitial, so every API call simply fails.
+ *
+ * This trusts that one hostname so development can proceed. It is scoped as tightly as the
+ * API allows (exact host, unpackaged builds only) but it is still a real downgrade: traffic
+ * to that host is no longer MITM-protected, and this app carries PHI. Packaged builds are
+ * deliberately excluded, so shipping requires a properly trusted certificate rather than a
+ * wider exemption here.
+ */
+if (!app.isPackaged) {
+  const upstreamHostname = (() => {
+    try {
+      return new URL(getApiUpstreamBase()).hostname;
+    } catch {
+      return null;
+    }
+  })();
+
+  app.on('certificate-error', (event, _webContents, url, error, _certificate, callback) => {
+    let hostname: string | null = null;
+    try {
+      hostname = new URL(url).hostname;
+    } catch {
+      hostname = null;
+    }
+
+    if (upstreamHostname && hostname === upstreamHostname) {
+      console.warn(`[main] TRUSTING UNVERIFIED CERTIFICATE for ${hostname} (${error}) — dev builds only`);
+      event.preventDefault();
+      callback(true);
+      return;
+    }
+
+    callback(false);
+  });
+}
 
 const appStartMs = Date.now();
 
@@ -303,7 +348,8 @@ function openSettingsWindow(): void {
     settingsWindowRef.focus();
     return;
   }
-  startEkascribeWeb().then((baseUrl) => {
+  startEkascribeWeb().then(() => {
+    const baseUrl = getEkascribeAppOrigin();
     const win = new BrowserWindow({
       width: 680,
       height: 560,
@@ -716,7 +762,10 @@ const createWindow = async () => {
     try {
       // Idempotent — a no-op unless the `ready` handler's start failed or was skipped.
       await startApiProxy();
-      const ekascribeWebUrl = await startEkascribeWeb();
+      await startEkascribeWeb();
+      // Load the `app://` origin, not the loopback server behind it — the page's origin is
+      // what the API allowlists, and loading loopback directly would hand it the wrong one.
+      const ekascribeWebUrl = getEkascribeAppOrigin();
       addBreadcrumb('navigation', 'ekascribe_web_server_started', { url: ekascribeWebUrl });
       await mainWindow.loadURL(ekascribeWebUrl);
       loaded = true;
@@ -737,6 +786,7 @@ const createWindow = async () => {
           }
         }, 1500);
       } else {
+        console.error('[main] ekascribe-web failed to start/load', error);
         captureError(error, { domain: 'crash', component: 'webserver' });
       }
     }
@@ -1226,7 +1276,10 @@ app.on('ready', async () => {
     resourcesPath: process.resourcesPath,
     appPath: app.getAppPath(),
   });
-  registerProxyProtocolHandler();
+  // registerProxyProtocolHandler();
+  // Must be handled before any window loads — the main window's very first navigation is
+  // an `app://ekascribe` URL.
+  registerEkascribeAppProtocol();
   // Must be listening before any window loads: the embedded web app addresses it for
   // every backend call from its very first render.
   try {

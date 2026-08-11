@@ -1,6 +1,7 @@
 import { ipcMain, net, session } from 'electron';
 import { getAuthToken } from './authManager';
 import { getApiProxyOrigin } from './apiProxyManager';
+import { ELECTRON_API_ORIGIN, getApiUpstreamBase } from '../config';
 
 export interface NetworkRequestPayload {
   url: string;
@@ -56,6 +57,35 @@ function redactHeaders(headers: Record<string, string>): Record<string, string> 
   return sanitized;
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** Replayable curl for debugging — secrets redacted in header values. */
+function toCurl(method: string, url: string, headers: Record<string, string>, body: string | null): string {
+  const parts = ['curl', '-i', '-X', method, shellQuote(url)];
+  for (const [key, value] of Object.entries(redactHeaders(headers))) {
+    parts.push('-H', shellQuote(`${key}: ${value}`));
+  }
+  if (body !== null && method !== 'GET' && method !== 'HEAD') {
+    const truncated = body.length > 2000 ? `${body.slice(0, 2000)}…` : body;
+    parts.push('--data-raw', shellQuote(truncated));
+  }
+  return parts.join(' ');
+}
+
+/** True when this URL is the real upstream API (not the loopback proxy / page). */
+function isUpstreamApiTarget(url: string): boolean {
+  try {
+    const target = new URL(url).origin;
+    const upstream = new URL(getApiUpstreamBase()).origin;
+    if (target === upstream) return true;
+    return target === 'https://api.eka.care' || target.endsWith('.eka.care');
+  } catch {
+    return false;
+  }
+}
+
 async function executeRequest(
   url: string,
   method: string,
@@ -102,15 +132,14 @@ async function handleNetworkRequest(
   const url = toAbsoluteUrl(payload.url);
   const viaProxy = isProxyTarget(url);
 
-  console.log('[networkManager] request', {
-    method,
-    url,
-    viaProxy,
-    retry,
-    hasBody: body !== null,
-    bodyLength: body?.length ?? 0,
-    headers: redactHeaders(headers),
-  });
+  // Direct-to-upstream (proxy disabled) — stamp the desktop Origin. When the Express
+  // proxy is in the path it sets Origin itself on the upstream hop.
+  if (isUpstreamApiTarget(url)) {
+    headers.origin = ELECTRON_API_ORIGIN;
+    delete headers.Origin;
+    delete headers.Referer;
+    delete headers.referer;
+  }
 
   // Backend calls go through the Express proxy, which owns credential injection and the
   // 401 refresh-and-retry. Requests to third-party hosts (presigned upload URLs and the
@@ -118,6 +147,8 @@ async function handleNetworkRequest(
   if (viaProxy && !headers['client-id']) {
     headers['client-id'] = DEFAULT_CLIENT_ID;
   }
+
+  console.log('[networkManager] curl\n' + toCurl(method, url, headers, body));
 
   let response: Response;
   try {
@@ -130,19 +161,29 @@ async function handleNetworkRequest(
       method,
       url,
       error: String(error),
+      curl: toCurl(method, url, headers, body),
     });
     return NETWORK_ERROR_RESPONSE;
   }
 
+  const serialized = await serializeResponse(response);
+  const bodyPreview =
+    serialized.body.length > 4000
+      ? `${serialized.body.slice(0, 4000)}… (${serialized.body.length} bytes)`
+      : serialized.body;
+
   console.log('[networkManager] response', {
     method,
     url,
-    status_code: response.status,
-    ok: response.ok,
+    status_code: serialized.status,
+    statusText: serialized.statusText,
+    ok: serialized.ok,
     retry,
+    headers: redactHeaders(serialized.headers),
+    body: bodyPreview,
   });
 
-  return serializeResponse(response);
+  return serialized;
 }
 
 /** True when the request is bound for the main-process Express proxy. */
@@ -157,12 +198,24 @@ function isProxyTarget(url: string): boolean {
 export function registerNetworkIpcHandlers(): void {
   ipcMain.handle('network:request', handleNetworkRequest);
 
-  // Inject auth header for all renderer fetch() requests to EKA Care APIs.
-  // The SDK (@eka-care/ekascribe-ts-sdk) uses raw fetch(), bypassing the IPC transport that
-  // injects auth automatically. Without this, SDK API calls return 403 and trigger auto-logout.
-  // The guard prevents double-injection for IPC requests that already carry auth.
+  // Inject auth for renderer fetch() that bypasses the IPC transport (vendored SDK raw
+  // fetch). With the API proxy disabled this is the only thing attaching credentials to
+  // those calls.
+  //
+  // Origin is deliberately NOT touched here. The window is served from `app://ekascribe`,
+  // so Chromium already sends exactly the origin the API allowlists — and rewriting it
+  // would be worse than redundant: `webRequest` alters the header on the wire but not the
+  // origin CORS validates the response against, so an upstream echoing the rewritten value
+  // fails the check.
+  const upstream = getApiUpstreamBase().replace(/\/+$/, '');
   session.defaultSession.webRequest.onBeforeSendHeaders(
-    { urls: ['https://api.eka.care/*', 'https://*.eka.care/*'] },
+    {
+      urls: [
+        `${upstream}/*`,
+        'https://api.eka.care/*',
+        'https://*.eka.care/*',
+      ],
+    },
     (details, callback) => {
       const requestHeaders = { ...details.requestHeaders };
       if (!requestHeaders['auth'] && !requestHeaders['Auth']) {
@@ -171,6 +224,7 @@ export function registerNetworkIpcHandlers(): void {
           requestHeaders['auth'] = authToken;
         }
       }
+      delete requestHeaders['Referer'];
       callback({ requestHeaders });
     }
   );

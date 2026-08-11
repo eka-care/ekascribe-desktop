@@ -6,7 +6,7 @@ import { app, BrowserWindow, ipcMain, safeStorage, WebContents } from 'electron'
 import { IpcMainEvent } from 'electron/main';
 import { net, shell } from 'electron';
 import ElectronStore from 'electron-store';
-import { startEkascribeWeb } from './ekascribeWebManager';
+import { startEkascribeWeb, getEkascribeAppOrigin } from './ekascribeWebManager';
 import { captureError, captureLog, addBreadcrumb, identifyUser, resetUser } from './sentryManager';
 import { showPermissionPromptIfNeeded } from './notificationManager';
 import { clearStorage } from './storageManager';
@@ -587,7 +587,9 @@ export function registerAuthIpcHandlers(onAuthStateChanged?: () => void): void {
     void (async () => {
       try {
         logLogin('starting ekascribe-web');
-        const ekascribeWebUrl = await startEkascribeWeb();
+        await startEkascribeWeb();
+        // The `app://` origin, not the loopback server behind it — see ekascribeWebManager.
+        const ekascribeWebUrl = getEkascribeAppOrigin();
         logLogin('ekascribe-web started', { url: ekascribeWebUrl });
         if (!event.sender.isDestroyed()) {
           event.sender.once('did-finish-load', () => {

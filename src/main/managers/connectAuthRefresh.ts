@@ -9,7 +9,7 @@ import {
   isLogoutInProgress,
 } from './authManager';
 import { captureError, addBreadcrumb } from './sentryManager';
-import { getApiUpstreamBase } from '../config';
+import { getApiUpstreamBase, ELECTRON_API_ORIGIN } from '../config';
 
 type ConnectAuthRefreshResponse = {
   access_token?: string;
@@ -83,7 +83,12 @@ async function refreshTokenOnMain(ekaHost: string, clientId: string): Promise<Re
       refreshUrl,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'client-id': clientId, auth: getAuthToken() },
+        headers: {
+          'Content-Type': 'application/json',
+          'client-id': clientId,
+          auth: getAuthToken(),
+          Origin: ELECTRON_API_ORIGIN,
+        },
         body: JSON.stringify({
           refresh_token: getRefreshToken() ?? '',
           access_token: getAuthToken() ?? '',
