@@ -88,7 +88,7 @@ export function enterPipMode(win: BrowserWindow): void {
   }
 }
 
-function exitPipMode(): void {
+function exitPipMode(maximize = false): void {
   const win = pipModeWindow;
   if (!win || win.isDestroyed() || !savedBounds) return;
 
@@ -101,7 +101,7 @@ function exitPipMode(): void {
 
   if (savedWasFullScreen) {
     win.setFullScreen(true);
-  } else if (savedWasMaximized) {
+  } else if (savedWasMaximized || maximize) {
     // Restore to maximized directly — no setBounds needed, the OS knows the
     // previous maximized geometry. Calling setBounds then maximize looks janky.
     win.maximize();
@@ -113,12 +113,12 @@ function exitPipMode(): void {
   savedBounds = null;
 }
 
-export function exitPipModeToRoute(route: string): void {
+export function exitPipModeToRoute(route: string, options?: { maximize?: boolean }): void {
   const win = pipModeWindow;
   if (win && !win.isDestroyed()) {
     win.webContents.send('login-pip:exit', route);
   }
-  exitPipMode();
+  exitPipMode(options?.maximize ?? false);
 }
 
 export function sendLoginPipState(state: PipState): void {

@@ -218,9 +218,15 @@ export function registerNetworkIpcHandlers(): void {
     },
     (details, callback) => {
       const requestHeaders = { ...details.requestHeaders };
-      if (!requestHeaders['auth'] && !requestHeaders['Auth']) {
-        const authToken = getAuthToken();
-        if (authToken) {
+      const authToken = getAuthToken();
+      if (authToken) {
+        if (details.url.startsWith(upstream)) {
+          // vaarta upstream: CookieAuthMiddleware reads `Authorization: Bearer` only.
+          if (!requestHeaders['Authorization'] && !requestHeaders['authorization']) {
+            requestHeaders['Authorization'] = `Bearer ${authToken}`;
+          }
+        } else if (!requestHeaders['auth'] && !requestHeaders['Auth']) {
+          // eka.care hosts keep the legacy `auth` header contract.
           requestHeaders['auth'] = authToken;
         }
       }

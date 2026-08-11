@@ -16,7 +16,8 @@ import {
   exitPipModeToRoute,
   sendLoginPipState,
 } from './loginWindowManager';
-import { FORCE_AUTHENTICATED } from '../config';
+import { FORCE_AUTHENTICATED, getApiUpstreamBase } from '../config';
+import { injectElectronEnv } from './ekascribeWebManager';
 
 const store = new ElectronStore();
 const UNENCRYPTED_PREFIX = 'plain:';
@@ -432,8 +433,140 @@ async function refreshOidcTokenInternal(input: {
   return normalized;
 }
 
+// Vaarta hosted-login flow; flip USE_EKA_OIDC_LOGIN to route back to eka.care OIDC.
+const USE_EKA_OIDC_LOGIN: boolean = false;
+
+async function startVaartaWebLogin(): Promise<OidcLoginResult> {
+  // Load electron.env first so an EKA_API_UPSTREAM override applies on the login path.
+  injectElectronEnv();
+  const state = randomBytes(16).toString('hex');
+  const upstream = getApiUpstreamBase().replace(/\/+$/, '');
+  const loginUrl = new URL(`${upstream}/auth/login`);
+  loginUrl.searchParams.set('audience', 'scribe-web');
+  loginUrl.searchParams.set('redirect_uri', OIDC_REDIRECT_URI);
+  loginUrl.searchParams.set('state', state);
+
+  const callbackPromise = waitForVaartaTokenCallback(state);
+  logLogin('opening external browser (vaarta login)', { loginUrl: loginUrl.toString() });
+  await shell.openExternal(loginUrl.toString());
+  const tokens = await callbackPromise;
+  logLogin('vaarta login callback ok', {
+    hasAccessToken: !!tokens.accessToken,
+    hasRefreshToken: !!tokens.refreshToken,
+  });
+  // tokenType/scope/idToken/clientId/clientSecret are OIDC artifacts — unused on this path.
+  return {
+    ...tokens,
+    tokenType: 'Bearer',
+    expiresIn: null,
+    scope: null,
+    idToken: null,
+    clientId: '',
+    clientSecret: '',
+  };
+}
+
+function waitForVaartaTokenCallback(
+  expectedState: string
+): Promise<{ accessToken: string; refreshToken: string }> {
+  if (activeOidcCallbackAbort) {
+    activeOidcCallbackAbort(new Error('[vaarta-login] previous callback listener aborted by new login attempt'));
+  }
+
+  return new Promise((resolve, reject) => {
+    let isSettled = false;
+    const server = createServer((req, res) => {
+      try {
+        const parsedUrl = parseCallbackRequest(req);
+        logLogin('vaarta callback received', {
+          method: req.method ?? 'GET',
+          path: parsedUrl.pathname,
+          hasState: !!parsedUrl.searchParams.get('state'),
+          hasAccessToken: !!parsedUrl.searchParams.get('access_token'),
+          hasRefreshToken: !!parsedUrl.searchParams.get('refresh_token'),
+        });
+        if (!OIDC_CALLBACK_PATHS.has(parsedUrl.pathname)) {
+          sendCallbackHtml(res, 404, '<h3>Invalid callback path</h3>');
+          return;
+        }
+
+        if (parsedUrl.searchParams.get('state') !== expectedState) {
+          sendCallbackHtml(res, 400, '<h3>Invalid state</h3>');
+          cleanup(new Error('[vaarta-login] callback state mismatch'));
+          return;
+        }
+
+        const accessToken = parsedUrl.searchParams.get('access_token') ?? '';
+        const refreshToken = parsedUrl.searchParams.get('refresh_token') ?? '';
+        if (!accessToken || !refreshToken) {
+          sendCallbackHtml(res, 400, '<h3>Missing tokens in callback</h3>');
+          cleanup(new Error('[vaarta-login] callback missing tokens'));
+          return;
+        }
+
+        // Deep-link back into the app so it regains focus, mirroring the OIDC flow.
+        sendCallbackRedirect(res, 'ekadoc://');
+        cleanup(undefined, { accessToken, refreshToken });
+      } catch (error) {
+        sendCallbackHtml(res, 500, '<h3>Unexpected callback error</h3>');
+        cleanup(new Error(`[vaarta-login] callback parsing failed: ${toErrorMessage(error)}`));
+      }
+    });
+
+    const timer = setTimeout(() => {
+      logLogin('vaarta callback timeout', { timeoutMs: OIDC_CALLBACK_TIMEOUT_MS });
+      cleanup(new Error('[vaarta-login] timeout waiting for login callback'));
+    }, OIDC_CALLBACK_TIMEOUT_MS);
+
+    const cleanup = (error?: Error, tokens?: { accessToken: string; refreshToken: string }) => {
+      if (isSettled) return;
+      isSettled = true;
+      clearTimeout(timer);
+      if (activeOidcCallbackAbort === abortListener) {
+        activeOidcCallbackAbort = null;
+      }
+      server.removeAllListeners();
+      server.close(() => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(tokens as { accessToken: string; refreshToken: string });
+      });
+    };
+    const abortListener = (reason: Error) => cleanup(reason);
+    activeOidcCallbackAbort = abortListener;
+
+    server.on('error', (error) => {
+      const message = toErrorMessage(error);
+      if (message.includes('EADDRINUSE')) {
+        logLogin('vaarta callback listener failed EADDRINUSE', { port: OIDC_CALLBACK_PORT });
+        cleanup(
+          new Error(
+            `[vaarta-login] callback listener failed: localhost:${OIDC_CALLBACK_PORT} is already in use. Close the conflicting process or complete/cancel the previous login attempt.`,
+          ),
+        );
+        return;
+      }
+      logLogin('vaarta callback listener failed', { message });
+      cleanup(new Error(`[vaarta-login] callback listener failed: ${message}`));
+    });
+
+    server.listen(OIDC_CALLBACK_PORT, '127.0.0.1', () => {
+      logLogin('vaarta callback server listening', { port: OIDC_CALLBACK_PORT });
+    });
+  });
+}
+
 async function startOidcLogin(): Promise<OidcLoginResult> {
   if (activeOidcLoginPromise) {
+    return activeOidcLoginPromise;
+  }
+
+  if (!USE_EKA_OIDC_LOGIN) {
+    activeOidcLoginPromise = startVaartaWebLogin().finally(() => {
+      activeOidcLoginPromise = null;
+    });
     return activeOidcLoginPromise;
   }
 
@@ -688,8 +821,8 @@ export function registerAuthIpcHandlers(onAuthStateChanged?: () => void): void {
         hasAccess: !!result.accessToken,
         hasRefresh: !!result.refreshToken,
       });
-      // Restore window bounds before onAuthSuccess loads ekascribe-web
-      exitPipModeToRoute('/main/');
+      // Restore the window maximized before onAuthSuccess loads ekascribe-web.
+      exitPipModeToRoute('/main/', { maximize: true });
       return result;
     } catch (e) {
       logLogin('ipc auth:startOidcLogin FAILED', { error: toErrorMessage(e) });

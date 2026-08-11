@@ -75,8 +75,9 @@ async function refreshTokenOnMain(ekaHost: string, clientId: string): Promise<Re
     // ekaHost is '' for same-origin ekascribe-web builds. Resolve against the real upstream
     // rather than the Express proxy: the proxy retries 401s by calling this refresher, so
     // routing the refresh back through it would recurse.
+    // POST /connect-auth/v1/refresh rotates the refresh token and returns a fresh access token.
     const refreshUrl = new URL(
-      `${ekaHost}/connect-auth/v1/account/refresh-token`,
+      `${ekaHost}/connect-auth/v1/refresh`,
       getApiUpstreamBase(),
     ).toString();
     const response = await (net.fetch as Function)(
@@ -86,12 +87,10 @@ async function refreshTokenOnMain(ekaHost: string, clientId: string): Promise<Re
         headers: {
           'Content-Type': 'application/json',
           'client-id': clientId,
-          auth: getAuthToken(),
           Origin: ELECTRON_API_ORIGIN,
         },
         body: JSON.stringify({
           refresh_token: getRefreshToken() ?? '',
-          access_token: getAuthToken() ?? '',
         }),
         credentials: 'include',
         signal: controller.signal,
