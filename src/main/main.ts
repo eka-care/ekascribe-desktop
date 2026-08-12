@@ -44,29 +44,75 @@ import {
   registerEkascribeWebIpcHandlers,
   startEkascribeWeb,
   stopEkascribeWeb,
+  getEkascribeAppOrigin,
+  registerEkascribeAppSchemePrivileges,
+  registerEkascribeAppProtocol,
 } from './managers/ekascribeWebManager';
 import { registerNetworkIpcHandlers } from './managers/networkManager';
+import {
+  registerApiProxyIpcHandlers,
+  startApiProxy,
+  stopApiProxy,
+} from './managers/apiProxyManager';
 import { registerWhatsappIpcHandlers, initWhatsAppAutoConnect } from './managers/whatsappManager';
 import { registerPdfIpcHandlers } from './managers/pdfManager';
 import { registerNotificationIpcHandlers, showNotification, showPermissionPromptIfNeeded } from './managers/notificationManager';
-import { initPushManager, disposePushManager } from './managers/pushManager';
 import { registerProxyProtocolHandler, unregisterProxyProtocolHandler } from './managers/proxyManager';
 import { registerStorageIpcHandlers } from './managers/storageManager';
-import { initMainSentry, captureLog, captureError, addBreadcrumb, setSessionId, clearSessionId } from './managers/sentryManager';
 import { ChildProcess, spawnSync } from 'node:child_process';
 import { NativeBridge } from './nativeCommunication/NativeBridge';
 import { attach as attachFocusTracker, detach as detachFocusTracker } from './focusTracker';
 import ElectronStore from 'electron-store';
+import { FORCE_AUTHENTICATED, getApiUpstreamBase } from './config';
 
-initMainSentry();
 
-const appStartMs = Date.now();
+// Before `ready`, by requirement: Chromium reads the scheme privilege table during startup.
+registerEkascribeAppSchemePrivileges();
+
+/**
+ * The upstream API currently presents a self-signed certificate, which Chromium rejects with
+ * ERR_CERT_AUTHORITY_INVALID before CORS is ever evaluated — and a subresource fetch gets no
+ * click-through interstitial, so every API call simply fails.
+ *
+ * This trusts that one hostname so development can proceed. It is scoped as tightly as the
+ * API allows (exact host, unpackaged builds only) but it is still a real downgrade: traffic
+ * to that host is no longer MITM-protected, and this app carries PHI. Packaged builds are
+ * deliberately excluded, so shipping requires a properly trusted certificate rather than a
+ * wider exemption here.
+ */
+if (!app.isPackaged) {
+  const upstreamHostname = (() => {
+    try {
+      return new URL(getApiUpstreamBase()).hostname;
+    } catch {
+      return null;
+    }
+  })();
+
+  app.on('certificate-error', (event, _webContents, url, error, _certificate, callback) => {
+    let hostname: string | null = null;
+    try {
+      hostname = new URL(url).hostname;
+    } catch {
+      hostname = null;
+    }
+
+    if (upstreamHostname && hostname === upstreamHostname) {
+      console.warn(`[main] TRUSTING UNVERIFIED CERTIFICATE for ${hostname} (${error}) — dev builds only`);
+      event.preventDefault();
+      callback(true);
+      return;
+    }
+
+    callback(false);
+  });
+}
 
 process.on('uncaughtException', (error) => {
-  captureError(error, { domain: 'crash', component: 'uncaught_exception' });
+  console.error('[main] uncaught exception', error);
 });
 process.on('unhandledRejection', (reason) => {
-  captureError(reason, { domain: 'crash', component: 'unhandled_rejection' });
+  console.error('[main] unhandled rejection', reason);
 });
 
 if (!app.isPackaged) {
@@ -297,7 +343,8 @@ function openSettingsWindow(): void {
     settingsWindowRef.focus();
     return;
   }
-  startEkascribeWeb().then((baseUrl) => {
+  startEkascribeWeb().then(() => {
+    const baseUrl = getEkascribeAppOrigin();
     const win = new BrowserWindow({
       width: 680,
       height: 560,
@@ -535,17 +582,6 @@ function scheduleScribeCommandAckTimeout(channel: string, sourceEvent: string): 
 }
 
 function handleIncomingDeepLink(url: string) {
-  let safePath: string | undefined;
-  try {
-    const parsed = new URL(url);
-    safePath = `${parsed.protocol}//${parsed.hostname}${parsed.pathname}`;
-  } catch {
-    safePath = undefined;
-  }
-  addBreadcrumb('navigation', 'app_deep_link', {
-    parsedCommand: parseDeepLinkCommand(url) ?? 'none',
-    ...(safePath ? { path: safePath } : {}),
-  });
   pendingDeepLinkUrl = url;
   focusMainWindow();
   dispatchDeepLinkToRenderer(url);
@@ -618,7 +654,7 @@ const createWindow = async () => {
     height: MAIN_WINDOW_MIN_HEIGHT,
     minWidth: MAIN_WINDOW_MIN_WIDTH,
     minHeight: MAIN_WINDOW_MIN_HEIGHT,
-    title: 'EkaScribe',
+    title: 'Vaarta',
     show: false,
     backgroundColor: '#fcfcfc',
     webPreferences: {
@@ -642,11 +678,11 @@ const createWindow = async () => {
   if (!wasOpenedAtLogin) {
     mainWindow.maximize();
   }
-  mainWindow.setTitle('EkaScribe');
+  mainWindow.setTitle('Vaarta');
   isScribeRendererReady = false;
   mainWindow.on('page-title-updated', (event) => {
     event.preventDefault();
-    mainWindow.setTitle('EkaScribe');
+    mainWindow.setTitle('Vaarta');
   });
   mainWindow.on('move', () => {
     positionUpdatePopupInsideApp(mainWindow);
@@ -664,19 +700,13 @@ const createWindow = async () => {
         errorDescription,
         validatedURL,
       });
-      captureLog('window_load_failed', { errorCode, errorDescription, url: validatedURL });
     }
   );
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    captureError(new Error(`Renderer process gone: ${details.reason}`), {
-      domain: 'crash',
-      component: 'renderer',
-      extra: { reason: details.reason, exitCode: details.exitCode },
-    });
+    console.error('[main] render process gone', details);
   });
   mainWindow.webContents.on('did-finish-load', () => {
     logOverlayHelper('main window did-finish-load', { url: mainWindow.webContents.getURL() });
-    addBreadcrumb('navigation', 'did_finish_load', { url: mainWindow.webContents.getURL() });
     flushPendingScribeCommands(mainWindow);
     flushPendingNotificationData(mainWindow);
     reflushUpdateStateToWindow(mainWindow);
@@ -695,21 +725,23 @@ const createWindow = async () => {
 
   const authToken = getAuthToken();
   const refreshToken = getRefreshToken();
-  const isAuthenticated = !!authToken && !!refreshToken;
-  const loadTarget = isAuthenticated ? 'ekascribe-web' : 'renderer';
-  const windowLoadStartMs = Date.now();
-
-  captureLog('window_load_started', { isAuthenticated, loadTarget });
+  const isAuthenticated = FORCE_AUTHENTICATED || (!!authToken && !!refreshToken);
+  if (FORCE_AUTHENTICATED) {
+    console.warn('[main] FORCE_AUTH — bypassing token check and loading ekascribe-web');
+  }
 
   let loaded = false;
 
   if (isAuthenticated) {
     try {
-      const ekascribeWebUrl = await startEkascribeWeb();
-      addBreadcrumb('navigation', 'ekascribe_web_server_started', { url: ekascribeWebUrl });
+      // Idempotent — a no-op unless the `ready` handler's start failed or was skipped.
+      await startApiProxy();
+      await startEkascribeWeb();
+      // Load the `app://` origin, not the loopback server behind it — the page's origin is
+      // what the API allowlists, and loading loopback directly would hand it the wrong one.
+      const ekascribeWebUrl = getEkascribeAppOrigin();
       await mainWindow.loadURL(ekascribeWebUrl);
       loaded = true;
-      captureLog('window_load_completed', { loadTarget, url: ekascribeWebUrl, duration_ms: Date.now() - windowLoadStartMs });
       setTimeout(() => {
         if (!mainWindow.isDestroyed()) {
           showPermissionPromptIfNeeded(mainWindow);
@@ -718,7 +750,6 @@ const createWindow = async () => {
     } catch (error: any) {
       if (error?.code === 'ERR_ABORTED') {
         console.log('[ekascribe-web] loadURL aborted by renderer navigation (likely a redirect), treating as loaded');
-        addBreadcrumb('navigation', 'load_url_aborted', { loadTarget, errorCode: error?.code });
         loaded = true;
         setTimeout(() => {
           if (!mainWindow.isDestroyed()) {
@@ -726,11 +757,25 @@ const createWindow = async () => {
           }
         }, 1500);
       } else {
-        captureError(error, { domain: 'crash', component: 'webserver' });
+        console.error('[main] ekascribe-web failed to start/load', error);
       }
     }
   } else {
     console.log('[main] no auth/refresh token — showing login screen');
+  }
+
+  // Under FORCE_AUTH the renderer fallback is the login screen, which defeats the flag.
+  // Surface the ekascribe-web failure instead of silently landing on auth.
+  if (!loaded && FORCE_AUTHENTICATED) {
+    console.error('[main] FORCE_AUTH — ekascribe-web failed to load; not falling back to login');
+    await mainWindow.loadURL(
+      'data:text/html,' +
+      encodeURIComponent(
+        '<body style="font:14px system-ui;padding:32px"><h2>FORCE_AUTH debug mode</h2>' +
+        '<p>ekascribe-web failed to start. Login fallback is suppressed — check the main-process console.</p></body>'
+      )
+    );
+    loaded = true;
   }
 
   if (!loaded) {
@@ -739,7 +784,6 @@ const createWindow = async () => {
       try {
         await mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
         loaded = true;
-        captureLog('window_load_completed', { loadTarget, url: MAIN_WINDOW_VITE_DEV_SERVER_URL, duration_ms: Date.now() - windowLoadStartMs });
       } catch (error) {
         console.error('[window] failed loading Vite dev server URL, trying file fallback', {
           url: MAIN_WINDOW_VITE_DEV_SERVER_URL,
@@ -750,7 +794,6 @@ const createWindow = async () => {
 
     if (!loaded) {
       await mainWindow.loadFile(rendererFilePath);
-      captureLog('window_load_completed', { loadTarget, url: rendererFilePath, duration_ms: Date.now() - windowLoadStartMs });
     }
   }
 
@@ -837,9 +880,6 @@ function registerScribeGlobalShortcut(accelerator: string): void {
     sendScribeCommandToRenderer('start', 'keyboard-shortcut');
   });
   if (!registered) {
-    captureError(new Error(`Hotkey registration failed: ${accelerator}`), {
-      domain: 'infra', component: 'hotkey', extra: { shortcut: accelerator },
-    });
   }
 }
 
@@ -1072,7 +1112,6 @@ function buildTrayMenu(): Menu {
 
     const clickFn = canClickAppointments
       ? () => {
-          addBreadcrumb('scribe', 'appointment_selected', { source: 'tray', patient_oid: appt.patientOid });
           focusMainWindow();
           if (!mainWindowRef || mainWindowRef.isDestroyed()) return;
           mainWindowRef.webContents.send('scribe:start-with-appointment', {
@@ -1119,7 +1158,7 @@ function buildTrayMenu(): Menu {
     { label: 'My Queue', click: focusMainWindow },
     { label: 'Past Sessions', click: focusMainWindow },
     { type: 'separator' as const },
-    { label: `EkaScribe v${app.getVersion()}`, enabled: false },
+    { label: `Vaarta v${app.getVersion()}`, enabled: false },
     { label: 'Exit', click: () => app.quit() },
   ];
 
@@ -1193,7 +1232,6 @@ app.on('ready', async () => {
   applyAutoLaunchSetting(getAutoLaunchEnabled());
   Menu.setApplicationMenu(buildAppMenu());
   createTray();
-  captureLog('app_launched', { version: app.getVersion(), platform: process.platform, arch: process.arch, startup_duration_ms: Date.now() - appStartMs });
   console.log('[main] app ready — hasAuthToken:', !!getAuthToken());
   console.log('[main] app ready — hasRefreshToken:', !!getRefreshToken());
   logOverlayHelper('main app ready', {
@@ -1201,7 +1239,17 @@ app.on('ready', async () => {
     resourcesPath: process.resourcesPath,
     appPath: app.getAppPath(),
   });
-  registerProxyProtocolHandler();
+  // registerProxyProtocolHandler();
+  // Must be handled before any window loads — the main window's very first navigation is
+  // an `app://ekascribe` URL.
+  registerEkascribeAppProtocol();
+  // Must be listening before any window loads: the embedded web app addresses it for
+  // every backend call from its very first render.
+  try {
+    await startApiProxy();
+  } catch (error) {
+    console.error('[main] failed to start API proxy:', error);
+  }
   setupAutoUpdates(logOverlayHelper, () => mainWindowRef);
   // setTimeout(() => { // mock auto update check function
   //   isUpdateAvailable = true;
@@ -1222,16 +1270,13 @@ app.on('ready', async () => {
   registerNativeBottomViewIpcHandlers();
   registerRecordingIpcHandlers();
   registerEkascribeWebIpcHandlers();
+  registerApiProxyIpcHandlers();
   registerNetworkIpcHandlers();
   registerWhatsappIpcHandlers();
   registerPdfIpcHandlers();
   registerStorageIpcHandlers();
   initWhatsAppAutoConnect();
   registerNotificationIpcHandlers();
-  initPushManager().catch((err) => {
-    captureError(err, { domain: 'infra', component: 'push', extra: { action: 'init' } });
-    console.error('[main] pushManager init error:', err);
-  });
   ipcMain.on('app:getVersionSync', (event) => {
     event.returnValue = app.getVersion();
   });
@@ -1410,9 +1455,6 @@ app.on('ready', async () => {
 
   ipcMain.on('scribe:statusUpdate', (_event, processingStatus: string, sessionId: string | null) => {
     logOverlayHelper('renderer->main ipc scribe:statusUpdate', { processingStatus, sessionId: sessionId ?? '' });
-    if (sessionId) setSessionId(sessionId);
-    else clearSessionId();
-    addBreadcrumb('scribe', 'statusUpdate', { processingStatus, sessionId: sessionId ?? '' });
     cachedScribeStatus = { processingStatus, sessionId: sessionId ?? '' };
     const status = processingStatus.toLowerCase();
     recordingRunning = status === 'recording' || status === 'recording_paused' || status === 'paused';
@@ -1434,7 +1476,6 @@ app.on('ready', async () => {
     const nativeOverlayStatuses = ['recording', 'recording_paused', 'paused', 'processing', 'ready', 'analyzing_failed'];
     if (nativeBridge?.isConnected() && nativeOverlayStatuses.includes(status)) {
       nativeBridge.sendEvent('scribe.status', { processingStatus, sessionId: sessionId ?? '' });
-      addBreadcrumb('overlay', `overlay_${status}`, { session_id: sessionId ?? '' });
       logOverlayHelper('main->native event sent', {
         eventName: 'scribe.status',
         processingStatus,
@@ -1449,7 +1490,6 @@ app.on('ready', async () => {
     recordingRunning = false;
     if (nativeBridge?.isConnected()) {
       nativeBridge.sendEvent('scribe.processing.completed', { transactionId, status });
-      addBreadcrumb('overlay', 'overlay_processed', { session_id: cachedScribeStatus.sessionId });
       logOverlayHelper('main->native event sent', {
         eventName: 'scribe.processing.completed',
         transactionId,
@@ -1468,7 +1508,6 @@ app.on('ready', async () => {
     recordingRunning = false;
     if (nativeBridge?.isConnected()) {
       nativeBridge.sendEvent('scribe.session.discarded', null);
-      addBreadcrumb('overlay', 'overlay_discarded');
       logOverlayHelper('main->native event sent', { eventName: 'scribe.session.discarded' });
     }
   });
@@ -1479,7 +1518,6 @@ app.on('ready', async () => {
     recordingRunning = false;
     if (nativeBridge?.isConnected()) {
       nativeBridge.sendEvent('scribe.error', { errorCode, errorMessage });
-      addBreadcrumb('overlay', 'overlay_error', { session_id: cachedScribeStatus.sessionId, errorCode });
       logOverlayHelper('main->native event sent', { eventName: 'scribe.error', errorCode, errorMessage });
     }
   });
@@ -1519,7 +1557,7 @@ app.on('ready', async () => {
   });
 
   NativeBridge.onParseError = (err) => {
-    captureError(err, { domain: 'infra', component: 'bridge', tags: { error: 'json_parse' } });
+    console.error('[native] failed parsing bridge message', err);
   };
   nativeBridge = new NativeBridge({ role: 'stdio' });
   initWindowsOverlayHandlers({
@@ -1575,7 +1613,6 @@ app.on('ready', async () => {
         break;
       case 'scribe.result.view': {
         const transactionId = (payload as { transactionId?: string } | undefined)?.transactionId;
-        addBreadcrumb('scribe', 'output_viewed', { session_id: transactionId, source: 'overlay' });
         // Snapshot BEFORE focusMainWindow() so we know if the window was already
         // open at the time the user clicked View (minimized counts as open —
         // its renderer is intact and should not be navigated away).
@@ -1639,7 +1676,6 @@ app.on('ready', async () => {
     console.error('[NativeBridge] error', err);
   });
   nativeBridge.on('connected', () => {
-    captureLog('native_helper_connected', { platform: process.platform, transport: 'stdio' });
     logOverlayHelper('native bridge connected', { status: cachedScribeStatus });
     nativeBridge?.sendEvent('scribe.status', cachedScribeStatus);
     const reconnectStatus = cachedScribeStatus.processingStatus.toLowerCase();
@@ -1667,7 +1703,6 @@ app.on('ready', async () => {
   try {
     await createWindow();
   } catch (error) {
-    captureError(error, { domain: 'crash', component: 'window_create' });
     app.quit();
     return;
   }
@@ -1691,7 +1726,6 @@ app.on('ready', async () => {
     const lag = now - lastLagCheck - 2000;
     lastLagCheck = now;
     if (lag > 2000) {
-      addBreadcrumb('perf', 'event_loop_blocked', { lag_ms: lag }, 'warning');
     }
   }, 2000);
 
@@ -1715,6 +1749,7 @@ app.on('will-quit', () => {
   tray = null;
   removeOwnerPidFile();
   unregisterProxyProtocolHandler();
+  void stopApiProxy();
   void stopEkascribeWeb();
   cancelDeferredHelperRestart();
   // Stdio bridge ties helper lifecycle to Electron: tear them down explicitly
@@ -1730,7 +1765,6 @@ app.on('will-quit', () => {
     clearScribeCommandAckTimer(channel);
   }
   scribeCommandRetryCount.clear();
-  disposePushManager();
   nativeBridge?.dispose();
   nativeBridge = null;
   globalShortcut.unregister(currentScribeAccelerator);
@@ -1752,7 +1786,7 @@ app.on('activate', () => {
         attachFocusTracker(mainWindowRef, nativeBridge);
       }
     }).catch((error) => {
-      captureError(error, { domain: 'crash', component: 'window_create' });
+      console.error('[main] startup failed, quitting', error);
       app.quit();
     });
   } else {

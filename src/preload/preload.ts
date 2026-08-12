@@ -94,8 +94,7 @@ contextBridge.exposeInMainWorld('authApi', {
   getRefreshToken: () => ipcRenderer.invoke('auth:getRefreshToken'),
   getAuthToken: () => ipcRenderer.invoke('auth:getAuthToken'),
   getTokens: () => ipcRenderer.invoke('auth:getTokens'),
-  startOidcLogin: () => ipcRenderer.invoke('auth:startOidcLogin'),
-  refreshOidcToken: () => ipcRenderer.invoke('auth:refreshOidcToken'),
+  startLogin: () => ipcRenderer.invoke('auth:startLogin'),
   persistTokens: (accessToken: string, refreshToken: string) =>
     ipcRenderer.invoke('auth:persistTokens', accessToken, refreshToken),
   refreshConnectToken: (ekaHost: string) =>
@@ -174,6 +173,22 @@ contextBridge.exposeInMainWorld('ekascribeWebApi', {
   start: () => ipcRenderer.invoke('ekascribe-web:start'),
   stop: () => ipcRenderer.invoke('ekascribe-web:stop'),
   getUrl: () => ipcRenderer.invoke('ekascribe-web:url'),
+});
+
+// Read synchronously: ekascribe-web builds its host table while its config module is
+// evaluated, before any async IPC could resolve. Empty string if the proxy failed to start,
+// which leaves the web app on its same-origin defaults.
+let apiProxyOrigin = '';
+try {
+  apiProxyOrigin = ipcRenderer.sendSync('api-proxy:originSync') ?? '';
+} catch {
+  // best-effort; getOrigin() below remains as an async fallback
+}
+
+contextBridge.exposeInMainWorld('apiProxyApi', {
+  /** Origin of the main-process Express proxy — every backend call must target it. */
+  origin: apiProxyOrigin,
+  getOrigin: () => ipcRenderer.invoke('api-proxy:origin'),
 });
 
 contextBridge.exposeInMainWorld('networkApi', {
@@ -388,6 +403,12 @@ contextBridge.exposeInMainWorld('desktopSettingsApi', {
     ipcRenderer.invoke('desktop:auto-launch:update', enabled),
 });
 
+/** Mirrors `PipState` in loginWindowManager — the wire format of `login-pip:state`. */
+type LoginPipState =
+  | { type: 'waiting' }
+  | { type: 'code'; userCode: string; verificationUrl: string; expiresAt: number }
+  | { type: 'error'; message: string };
+
 contextBridge.exposeInMainWorld('loginPipApi', {
   onEnter: (callback: () => void) => {
     const handler = () => callback();
@@ -399,11 +420,12 @@ contextBridge.exposeInMainWorld('loginPipApi', {
     ipcRenderer.on('login-pip:exit', handler);
     return () => ipcRenderer.removeListener('login-pip:exit', handler);
   },
-  onState: (callback: (state: { type: 'waiting' } | { type: 'error'; message: string }) => void) => {
-    const handler = (_event: IpcRendererEvent, state: { type: 'waiting' } | { type: 'error'; message: string }) =>
-      callback(state);
+  onState: (callback: (state: LoginPipState) => void) => {
+    const handler = (_event: IpcRendererEvent, state: LoginPipState) => callback(state);
     ipcRenderer.on('login-pip:state', handler);
     return () => ipcRenderer.removeListener('login-pip:state', handler);
   },
   cancelLogin: () => ipcRenderer.send('login-pip:cancel'),
+  shrinkToPip: () => ipcRenderer.send('login-pip:shrink'),
+  getState: (): Promise<LoginPipState | null> => ipcRenderer.invoke('login-pip:getState'),
 });

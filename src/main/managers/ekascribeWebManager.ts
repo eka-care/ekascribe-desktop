@@ -2,11 +2,143 @@ import path from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer, type Server as HttpServer } from 'node:http';
 import { createRequire } from 'node:module';
-import { app, ipcMain } from 'electron';
+import { app, ipcMain, net, protocol } from 'electron';
 
 const EKASCRIBE_WEB_PORT = 3876;
 const EKASCRIBE_WEB_HOST = '127.0.0.1';
 const EKASCRIBE_WEB_URL = `http://${EKASCRIBE_WEB_HOST}:${EKASCRIBE_WEB_PORT}`;
+
+/**
+ * Custom scheme the window actually loads from. Next needs a real HTTP server, so the
+ * loopback server above still runs — but the renderer never addresses it directly.
+ * `app://ekascribe/...` is bridged to it by {@link registerEkascribeAppProtocol}.
+ *
+ * The point is the *origin*. Backend calls go straight from the renderer to the upstream
+ * API, so the browser stamps `Origin:` itself from the page's security origin — a value no
+ * `webRequest` rewrite can change, because CORS validates the response against the real
+ * origin rather than the header on the wire. Serving the page from `app://ekascribe` makes
+ * that origin genuinely `app://ekascribe`, which is what the API allowlists.
+ */
+const EKASCRIBE_APP_SCHEME = 'app';
+const EKASCRIBE_APP_HOST = 'ekascribe';
+const EKASCRIBE_APP_ORIGIN = `${EKASCRIBE_APP_SCHEME}://${EKASCRIBE_APP_HOST}`;
+
+/**
+ * Origin the embedded web app is served from. ekascribe-web builds same-origin *relative*
+ * API URLs (`HOSTS.EKA_HOST === ''`); in a browser those resolve against the page origin,
+ * but requests routed over IPC reach the main process with no origin attached, so callers
+ * must resolve them against this base before handing them to `net.fetch`.
+ */
+export function getEkascribeWebOrigin(): string {
+  return EKASCRIBE_WEB_URL;
+}
+
+/** Origin the window loads from, and the `Origin:` the API sees on renderer calls. */
+export function getEkascribeAppOrigin(): string {
+  return EKASCRIBE_APP_ORIGIN;
+}
+
+/**
+ * Must run before `app.whenReady()` — Chromium reads the privilege table during startup and
+ * ignores later changes.
+ *
+ * `standard` is what gives the scheme a parseable origin (without it the page is opaque and
+ * every request is cross-origin `null`). `secure` marks it a trustworthy context, which the
+ * recorder depends on: `navigator.mediaDevices` is undefined outside a secure context, so
+ * without this flag `getUserMedia` in the web app's audio-capture layer breaks outright.
+ * `secure` also means the upstream API must be HTTPS — a trustworthy page fetching `http://`
+ * is active mixed content and Chromium blocks it with no way to opt back in per-request.
+ */
+export function registerEkascribeAppSchemePrivileges(): void {
+  protocol.registerSchemesAsPrivileged([
+    {
+      scheme: EKASCRIBE_APP_SCHEME,
+      privileges: {
+        standard: true,
+        secure: true,
+        supportFetchAPI: true,
+        corsEnabled: true,
+        stream: true,
+      },
+    },
+  ]);
+}
+
+/**
+ * Dropped from requests the bridge forwards to the Next server. They describe the
+ * renderer→bridge hop, not the loopback one — and `origin` is load-bearing: forwarding it
+ * makes `net.fetch` treat the loopback hop as a CORS request and send a preflight, which
+ * Next answers 400, failing the whole fetch with ERR_FAILED. Fonts are the only subresource
+ * fetched in CORS mode (so the only requests carrying `Origin`), which is why exactly the
+ * .woff2 files broke while everything else loaded.
+ */
+const BRIDGE_STRIPPED_HEADERS = new Set([
+  'origin',
+  'referer',
+  'host',
+  'connection',
+  'keep-alive',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+  'content-length',
+  'accept-encoding',
+]);
+const BRIDGE_STRIPPED_HEADER_PREFIXES = ['sec-', 'proxy-', 'access-control-request-'];
+
+function buildBridgeHeaders(source: Headers): Headers {
+  const headers = new Headers();
+  source.forEach((value, key) => {
+    const name = key.toLowerCase();
+    if (BRIDGE_STRIPPED_HEADERS.has(name)) return;
+    if (BRIDGE_STRIPPED_HEADER_PREFIXES.some((prefix) => name.startsWith(prefix))) return;
+    headers.append(key, value);
+  });
+  return headers;
+}
+
+/**
+ * Bridges `app://ekascribe/<path>` to the loopback Next server. Registered on the default
+ * session after `ready`.
+ *
+ * Redirects are followed inside `net.fetch`, so a Next-side redirect resolves here and the
+ * renderer keeps the `app://` URL it asked for rather than being navigated to loopback —
+ * which would silently drop the page back to the wrong origin.
+ */
+export function registerEkascribeAppProtocol(): void {
+  protocol.handle(EKASCRIBE_APP_SCHEME, async (request) => {
+    const url = new URL(request.url);
+    if (url.hostname !== EKASCRIBE_APP_HOST) {
+      return new Response('Not Found', { status: 404 });
+    }
+
+    // A window can be created before the server finishes booting; this is idempotent.
+    await startEkascribeWeb();
+
+    const target = `${EKASCRIBE_WEB_URL}${url.pathname}${url.search}`;
+    const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
+
+    try {
+      // Buffered rather than streamed: `net.fetch` does not reliably accept a ReadableStream
+      // body. Only Next's own traffic crosses this bridge (documents, assets, RSC payloads,
+      // server actions) — audio uploads go straight to the API — so bodies stay small.
+      const body = hasBody ? await request.arrayBuffer() : undefined;
+
+      return (await (net.fetch as Function)(target, {
+        method: request.method,
+        headers: buildBridgeHeaders(request.headers),
+        body,
+        bypassCustomProtocolHandlers: true,
+      })) as Response;
+    } catch (error) {
+      console.error('[ekascribe-web] app:// bridge failed for', target, error);
+      return new Response('Bad Gateway', { status: 502 });
+    }
+  });
+
+  console.log(`[ekascribe-web] ${EKASCRIBE_APP_ORIGIN} -> ${EKASCRIBE_WEB_URL}`);
+}
 
 type NextAppLike = {
   prepare: () => Promise<void>;
@@ -292,7 +424,7 @@ function loadEnvFile(filePath: string): Record<string, string> {
   return result;
 }
 
-function injectElectronEnv(): void {
+export function injectElectronEnv(): void {
   const vars = loadEnvFile(path.join(appRootPath(), 'electron.env'));
   for (const [k, v] of Object.entries(vars)) {
     if (!(k in process.env)) process.env[k] = v;

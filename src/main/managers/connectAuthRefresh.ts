@@ -8,7 +8,7 @@ import {
   persistConnectAuthTokens,
   isLogoutInProgress,
 } from './authManager';
-import { captureError, addBreadcrumb } from './sentryManager';
+import { getApiUpstreamBase, ELECTRON_API_ORIGIN } from '../config';
 
 type ConnectAuthRefreshResponse = {
   access_token?: string;
@@ -57,7 +57,6 @@ function logRefresh(message: string, meta?: unknown): void {
     const logFilePath = path.join(app.getPath('userData'), 'login.log');
     fs.appendFileSync(logFilePath, line, 'utf8');
   } catch { /* best-effort */ }
-  addBreadcrumb('auth', message, meta && typeof meta === 'object' ? meta as Record<string, unknown> : undefined);
   console.log(line.trim());
 }
 
@@ -71,11 +70,23 @@ async function refreshTokenOnMain(ekaHost: string, clientId: string): Promise<Re
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REFRESH_TIMEOUT_MS);
   try {
+    // ekaHost is '' for same-origin ekascribe-web builds. Resolve against the real upstream
+    // rather than the Express proxy: the proxy retries 401s by calling this refresher, so
+    // routing the refresh back through it would recurse.
+    const refreshUrl = new URL(
+      `${ekaHost}/connect-auth/v1/refresh`,
+      getApiUpstreamBase(),
+    ).toString();
     const response = await (net.fetch as Function)(
-      `${ekaHost}/connect-auth/v1/account/refresh-token`,
+      refreshUrl,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'client-id': clientId, auth: getAuthToken() },
+        headers: {
+          'Content-Type': 'application/json',
+          'client-id': clientId,
+          auth: getAuthToken(),
+          Origin: ELECTRON_API_ORIGIN,
+        },
         body: JSON.stringify({
           refresh_token: getRefreshToken() ?? '',
           access_token: getAuthToken() ?? '',
@@ -108,7 +119,6 @@ async function refreshTokenOnMain(ekaHost: string, clientId: string): Promise<Re
     return { ok: true, isNetworkError: false };
   } catch (error) {
     const networkError = isNetworkLevelError(error);
-    captureError(error, { domain: 'auth', component: 'token_refresh', extra: { isNetworkError: networkError } });
     return { ok: false, isNetworkError: networkError };
   } finally {
     clearTimeout(timer);

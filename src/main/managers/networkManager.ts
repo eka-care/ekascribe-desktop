@@ -1,6 +1,7 @@
 import { ipcMain, net, session } from 'electron';
 import { getAuthToken } from './authManager';
-import { refreshConnectAuthTokensDeduped } from './connectAuthRefresh';
+import { getApiProxyOrigin } from './apiProxyManager';
+import { ELECTRON_API_ORIGIN, getApiUpstreamBase } from '../config';
 
 export interface NetworkRequestPayload {
   url: string;
@@ -20,7 +21,6 @@ export interface NetworkResponsePayload {
 }
 
 const DEFAULT_CLIENT_ID = 'doc-web';
-const FLAVOUR = process.platform === 'win32' ? 'ekascribe-desktop-windows' : 'ekascribe-desktop-mac';
 const REQUEST_TIMEOUT_MS = 15000;
 
 // Sentinel returned when the request never reached the server (offline / timeout).
@@ -34,12 +34,65 @@ const NETWORK_ERROR_RESPONSE: NetworkResponsePayload = {
   body: '',
 };
 
+/**
+ * Renderer callers may pass a relative URL ('/connect-auth/...'). The renderer would resolve
+ * it against its page origin, but by the time it arrives here over IPC there is no origin
+ * left and `net.fetch` rejects with "Failed to parse URL". Resolve against the Express API
+ * proxy, which is where the embedded web app's absolute URLs already point.
+ */
+function toAbsoluteUrl(url: string): string {
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) return url;
+  try {
+    return new URL(url, getApiProxyOrigin()).toString();
+  } catch {
+    return url;
+  }
+}
+
 function redactHeaders(headers: Record<string, string>): Record<string, string> {
   const sanitized: Record<string, string> = { ...headers };
   if (sanitized.auth) sanitized.auth = '<redacted>';
   if (sanitized.authorization) sanitized.authorization = '<redacted>';
   if (sanitized.cookie) sanitized.cookie = '<redacted>';
   return sanitized;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** Replayable curl for debugging — secrets redacted in header values. */
+function toCurl(method: string, url: string, headers: Record<string, string>, body: string | null): string {
+  const parts = ['curl', '-i', '-X', method, shellQuote(url)];
+  for (const [key, value] of Object.entries(redactHeaders(headers))) {
+    parts.push('-H', shellQuote(`${key}: ${value}`));
+  }
+  if (body !== null && method !== 'GET' && method !== 'HEAD') {
+    const truncated = body.length > 2000 ? `${body.slice(0, 2000)}…` : body;
+    parts.push('--data-raw', shellQuote(truncated));
+  }
+  return parts.join(' ');
+}
+
+/** True only for the configured upstream — not the other eka.care hosts. */
+function isVaartaUpstream(url: string): boolean {
+  try {
+    return new URL(url).origin === new URL(getApiUpstreamBase()).origin;
+  } catch {
+    return false;
+  }
+}
+
+/** True when this URL is the real upstream API (not the loopback proxy / page). */
+function isUpstreamApiTarget(url: string): boolean {
+  try {
+    const target = new URL(url).origin;
+    const upstream = new URL(getApiUpstreamBase()).origin;
+    if (target === upstream) return true;
+    return target === 'https://api.eka.care' || target.endsWith('.eka.care');
+  } catch {
+    return false;
+  }
 }
 
 async function executeRequest(
@@ -84,28 +137,37 @@ async function handleNetworkRequest(
   _event: Electron.IpcMainInvokeEvent,
   payload: NetworkRequestPayload,
 ): Promise<NetworkResponsePayload> {
-  const { url, method, headers, body, retry, ekaHost } = payload;
-  console.log('[networkManager] request', {
-    method,
-    url,
-    retry,
-    hasBody: body !== null,
-    bodyLength: body?.length ?? 0,
-    headers: redactHeaders(headers),
-  });
+  const { method, headers, body, retry } = payload;
+  const url = toAbsoluteUrl(payload.url);
+  const viaProxy = isProxyTarget(url);
 
-  if (!headers['auth']) {
+  // Direct-to-upstream (proxy disabled) — stamp the desktop Origin. When the Express
+  // proxy is in the path it sets Origin itself on the upstream hop.
+  if (isUpstreamApiTarget(url)) {
+    headers.origin = ELECTRON_API_ORIGIN;
+    delete headers.Origin;
+    delete headers.Referer;
+    delete headers.referer;
+  }
+
+  // This transport bypasses the `onBeforeSendHeaders` hook below (that only sees
+  // renderer-initiated requests), so the vaarta upstream's `Authorization: Bearer`
+  // has to be attached here too — the web app sends the legacy `auth` header only.
+  if (isVaartaUpstream(url) && !headers['Authorization'] && !headers['authorization']) {
     const authToken = getAuthToken();
     if (authToken) {
-      headers['auth'] = authToken;
+      headers['Authorization'] = `Bearer ${authToken}`;
     }
   }
 
-  if (!headers['client-id']) {
+  // Backend calls go through the Express proxy, which owns credential injection and the
+  // 401 refresh-and-retry. Requests to third-party hosts (presigned upload URLs and the
+  // like) are forwarded untouched — attaching the session token to them would leak it.
+  if (viaProxy && !headers['client-id']) {
     headers['client-id'] = DEFAULT_CLIENT_ID;
   }
 
-  headers['flavour'] = FLAVOUR;
+  console.log('[networkManager] curl\n' + toCurl(method, url, headers, body));
 
   let response: Response;
   try {
@@ -118,64 +180,76 @@ async function handleNetworkRequest(
       method,
       url,
       error: String(error),
+      curl: toCurl(method, url, headers, body),
     });
     return NETWORK_ERROR_RESPONSE;
   }
 
+  const serialized = await serializeResponse(response);
+  const bodyPreview =
+    serialized.body.length > 4000
+      ? `${serialized.body.slice(0, 4000)}… (${serialized.body.length} bytes)`
+      : serialized.body;
+
   console.log('[networkManager] response', {
     method,
     url,
-    status_code: response.status,
-    ok: response.ok,
+    status_code: serialized.status,
+    statusText: serialized.statusText,
+    ok: serialized.ok,
     retry,
-    retried: false,
+    headers: redactHeaders(serialized.headers),
+    body: bodyPreview,
   });
 
-  if (response.status === 401 && retry) {
-    const clientId = headers['client-id'] || DEFAULT_CLIENT_ID;
-    console.warn('[networkManager] 401 received, attempting refresh+retry', { method, url, clientId });
-    const { ok: refreshed } = await refreshConnectAuthTokensDeduped(ekaHost, clientId);
-    console.log('[networkManager] refresh result', { method, url, refreshed });
+  return serialized;
+}
 
-    if (refreshed) {
-      const freshToken = getAuthToken();
-      if (freshToken) {
-        headers['auth'] = freshToken;
-      }
-      try {
-        const retryResponse = await executeRequest(url, method, headers, body);
-        return serializeResponse(retryResponse);
-      } catch (error) {
-        console.warn('[networkManager] retry request failed (network/timeout)', {
-          method,
-          url,
-          error: String(error),
-        });
-        return NETWORK_ERROR_RESPONSE;
-      }
-    }
+/** True when the request is bound for the main-process Express proxy. */
+function isProxyTarget(url: string): boolean {
+  try {
+    return new URL(url).origin === getApiProxyOrigin();
+  } catch {
+    return false;
   }
-
-  return serializeResponse(response);
 }
 
 export function registerNetworkIpcHandlers(): void {
   ipcMain.handle('network:request', handleNetworkRequest);
 
-  // Inject auth header for all renderer fetch() requests to EKA Care APIs.
-  // The SDK (@eka-care/ekascribe-ts-sdk) uses raw fetch(), bypassing the IPC transport that
-  // injects auth automatically. Without this, SDK API calls return 403 and trigger auto-logout.
-  // The guard prevents double-injection for IPC requests that already carry auth.
+  // Inject auth for renderer fetch() that bypasses the IPC transport (vendored SDK raw
+  // fetch). With the API proxy disabled this is the only thing attaching credentials to
+  // those calls.
+  //
+  // Origin is deliberately NOT touched here. The window is served from `app://ekascribe`,
+  // so Chromium already sends exactly the origin the API allowlists — and rewriting it
+  // would be worse than redundant: `webRequest` alters the header on the wire but not the
+  // origin CORS validates the response against, so an upstream echoing the rewritten value
+  // fails the check.
+  const upstream = getApiUpstreamBase().replace(/\/+$/, '');
   session.defaultSession.webRequest.onBeforeSendHeaders(
-    { urls: ['https://api.eka.care/*', 'https://*.eka.care/*'] },
+    {
+      urls: [
+        `${upstream}/*`,
+        'https://api.eka.care/*',
+        'https://*.eka.care/*',
+      ],
+    },
     (details, callback) => {
       const requestHeaders = { ...details.requestHeaders };
-      if (!requestHeaders['auth'] && !requestHeaders['Auth']) {
-        const authToken = getAuthToken();
-        if (authToken) {
+      const authToken = getAuthToken();
+      if (authToken) {
+        if (details.url.startsWith(upstream)) {
+          // The vaarta upstream authenticates on `Authorization: Bearer`.
+          if (!requestHeaders['Authorization'] && !requestHeaders['authorization']) {
+            requestHeaders['Authorization'] = `Bearer ${authToken}`;
+          }
+        } else if (!requestHeaders['auth'] && !requestHeaders['Auth']) {
+          // Other eka.care hosts keep the legacy `auth` header contract.
           requestHeaders['auth'] = authToken;
         }
       }
+      delete requestHeaders['Referer'];
       callback({ requestHeaders });
     }
   );
