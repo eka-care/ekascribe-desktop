@@ -12,6 +12,7 @@ import {
   enterPipMode,
   exitPipModeToRoute,
   sendLoginPipState,
+  getLoginPipState,
 } from './loginWindowManager';
 import { FORCE_AUTHENTICATED } from '../config';
 
@@ -240,14 +241,13 @@ export function registerAuthIpcHandlers(onAuthStateChanged?: () => void): void {
     };
   });
 
-  ipcMain.handle('auth:startLogin', async (event) => {
+  ipcMain.handle('auth:startLogin', async () => {
     logLogin('ipc auth:startLogin start');
 
-    const win = BrowserWindow.fromWebContents(event.sender);
-    if (win) {
-      enterPipMode(win);
-      sendLoginPipState({ type: 'waiting' });
-    }
+    // The window deliberately stays full-size here — it shrinks only once the
+    // user opens the verification link, so the code is readable while they act
+    // on it.
+    sendLoginPipState({ type: 'waiting' });
 
     try {
       // The code arrives well before the tokens do — push it straight to the PIP
@@ -275,6 +275,15 @@ export function registerAuthIpcHandlers(onAuthStateChanged?: () => void): void {
       throw e;
     }
   });
+
+  // Fired when the user opens the verification link: the browser is about to
+  // take over, so shrink to the floating panel that keeps the code visible.
+  ipcMain.on('login-pip:shrink', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win) enterPipMode(win);
+  });
+
+  ipcMain.handle('login-pip:getState', () => getLoginPipState());
 
   ipcMain.on('login-pip:cancel', () => {
     cancelDeviceLogin(new Error('Login cancelled by user'));

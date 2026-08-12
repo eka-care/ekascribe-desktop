@@ -77,6 +77,10 @@ interface DotnetRuntimeStatus {
   message: string | null;
 }
 
+interface ClipboardApi {
+  write: (payload: { html?: string; text: string }) => Promise<void>;
+}
+
 interface SystemApi {
   getDotnetRuntimeStatus: (options?: { refresh?: boolean }) => Promise<DotnetRuntimeStatus>;
   openExternal: (url: string) => Promise<void>;
@@ -126,6 +130,8 @@ interface LoginPipApi {
   onExit: (callback: (route: string) => void) => () => void;
   onState: (callback: (state: LoginPipStatePayload) => void) => () => void;
   cancelLogin: () => void;
+  shrinkToPip: () => void;
+  getState: () => Promise<LoginPipStatePayload | null>;
 }
 
 declare global {
@@ -142,6 +148,7 @@ declare global {
     ekascribeWebApi: EkascribeWebApi;
     networkApi: NetworkApi;
     deepLinkApi: DeepLinkApi;
+    clipboardApi: ClipboardApi;
     systemApi: SystemApi;
     notificationApi: NotificationApi;
     desktopSettingsApi: DesktopSettingsApi;

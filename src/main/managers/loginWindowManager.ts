@@ -124,8 +124,26 @@ export function exitPipModeToRoute(route: string): void {
   exitPipMode();
 }
 
+/**
+ * Retained so a view that mounts mid-login (the PIP panel, after the window
+ * shrinks) can ask for the current state instead of waiting for the next push
+ * that may never come.
+ */
+let lastLoginState: PipState | null = null;
+
+export function getLoginPipState(): PipState | null {
+  return lastLoginState;
+}
+
+/**
+ * Broadcast rather than targeted: the code is shown full-size first and only
+ * moves into the PIP panel once the user opens the verification link, so the
+ * receiving window changes mid-flow.
+ */
 export function sendLoginPipState(state: PipState): void {
-  if (pipModeWindow && !pipModeWindow.isDestroyed()) {
-    pipModeWindow.webContents.send('login-pip:state', state);
+  lastLoginState = state;
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
+    win.webContents.send('login-pip:state', state);
   }
 }

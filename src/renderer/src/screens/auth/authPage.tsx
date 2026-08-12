@@ -4,6 +4,7 @@ import { DotLottieReact } from '@lottiefiles/dotlottie-react';
 import { DotLottie } from '@lottiefiles/dotlottie-web';
 import vaartaLogoUrl from './vaarta-logo.lottie?url';
 import dotlottieWasmUrl from './dotlottie-player.wasm?url';
+import DeviceCodePanel from './DeviceCodePanel';
 
 // Point the dotLottie WASM engine at the bundled copy instead of its CDN default.
 DotLottie.setWasmUrl(dotlottieWasmUrl);
@@ -11,6 +12,14 @@ DotLottie.setWasmUrl(dotlottieWasmUrl);
 export function AuthPage() {
   const [isLoading, setIsLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [loginState, setLoginState] = React.useState<LoginPipStatePayload | null>(null);
+
+  // The window stays full-size until the verification link is opened, so the
+  // code renders here first and only then moves into the PIP panel.
+  React.useEffect(() => {
+    const unsub = window.loginPipApi.onState((s) => setLoginState(s));
+    return unsub;
+  }, []);
 
   const handleLogin = React.useCallback(async () => {
     setError(null);
@@ -105,7 +114,14 @@ export function AuthPage() {
           Vaarta listens to your conversations and turns them into structured notes – automatically.
         </p>
 
-        {/* CTA */}
+        {loginState?.type === 'code' ? (
+          <DeviceCodePanel
+            userCode={loginState.userCode}
+            verificationUrl={loginState.verificationUrl}
+            expiresAt={loginState.expiresAt}
+          />
+        ) : (
+        /* CTA */
         <button
           type="button"
           className="auth-login-btn"
@@ -148,6 +164,7 @@ export function AuthPage() {
             </svg>
           )}
         </button>
+        )}
 
         {error ? (
           <div

@@ -426,4 +426,6 @@ contextBridge.exposeInMainWorld('loginPipApi', {
     return () => ipcRenderer.removeListener('login-pip:state', handler);
   },
   cancelLogin: () => ipcRenderer.send('login-pip:cancel'),
+  shrinkToPip: () => ipcRenderer.send('login-pip:shrink'),
+  getState: (): Promise<LoginPipState | null> => ipcRenderer.invoke('login-pip:getState'),
 });

@@ -24,19 +24,37 @@ const POLL_PATH = '/connect-auth/v1/device/token';
 
 /**
  * Where the user enters the code. The initiate response wins if it returns one
- * (`verification_uri`), so the backend can move this without a client release —
- * this constant is only the fallback.
+ * (`verification_uri_complete` prefills the code, so it is preferred), letting the
+ * backend move this without a client release — this constant is only the fallback.
  */
-const FALLBACK_VERIFICATION_URL = 'https://bharat-backend.dev.eka.care/auth/login?audience=scribe-web';
+const FALLBACK_VERIFICATION_URL = 'https://bharat-backend.dev.eka.care/auth/activate';
 
 /** Overridden by `interval` / `expires_in` in the initiate response when present. */
-const DEFAULT_POLL_INTERVAL_MS = 3000;
-const DEFAULT_CODE_LIFETIME_MS = 5 * 60 * 1000;
+const DEFAULT_POLL_INTERVAL_MS = 5000;
+const DEFAULT_CODE_LIFETIME_MS = 10 * 60 * 1000;
 
-/** Body markers that mean "the user hasn't finished yet" rather than a failure. */
-const PENDING_MARKERS = ['authorization_pending', 'pending', 'slow_down', 'waiting'];
-/** Body markers that mean the attempt is over and polling must stop. */
-const TERMINAL_MARKERS = ['expired_token', 'expired', 'access_denied', 'denied', 'cancelled', 'canceled'];
+/**
+ * Markers meaning "the user hasn't finished yet" rather than a failure. The
+ * backend returns these with HTTP 400, so status alone can't be trusted — the
+ * body's `error.code` is what actually distinguishes waiting from failing.
+ */
+const PENDING_MARKERS = ['authorization_pending', 'pending', 'waiting'];
+/** Server asking us to back off; polling continues at a longer interval. */
+const SLOW_DOWN_MARKER = 'slow_down';
+/**
+ * Markers that mean the attempt is over and polling must stop.
+ * `unsupported_auth_mode` means the deployment is not running AUTH_MODE=jwt,
+ * so device sign-in is unavailable there at all.
+ */
+const TERMINAL_MARKERS = [
+  'expired_token',
+  'expired',
+  'access_denied',
+  'denied',
+  'cancelled',
+  'canceled',
+  'unsupported_auth_mode',
+];
 // ─── END BACKEND CONTRACT ───────────────────────────────────────────────────
 
 const REQUEST_TIMEOUT_MS = 15000;
@@ -58,6 +76,7 @@ type InitiateResult = DeviceCode & { longCode: string; pollIntervalMs: number };
 
 type PollOutcome =
   | { state: 'pending' }
+  | { state: 'slow_down' }
   | { state: 'ready'; tokens: DeviceLoginTokens }
   | { state: 'terminal'; reason: string };
 
@@ -149,8 +168,10 @@ function readInitiateResponse(body: Record<string, unknown>): InitiateResult {
   return {
     userCode,
     longCode,
+    // `_complete` carries the code as a query param, so the user only has to click.
     verificationUrl:
-      readString(body, 'verification_uri', 'verification_url', 'verificationUri') ?? FALLBACK_VERIFICATION_URL,
+      readString(body, 'verification_uri_complete', 'verification_uri', 'verification_url') ??
+      FALLBACK_VERIFICATION_URL,
     expiresAt: Date.now() + (expiresInSec !== null ? expiresInSec * 1000 : DEFAULT_CODE_LIFETIME_MS),
     pollIntervalMs: intervalSec !== null ? intervalSec * 1000 : DEFAULT_POLL_INTERVAL_MS,
   };
@@ -171,10 +192,17 @@ function readPollResponse(status: number, body: Record<string, unknown>): PollOu
     return { state: 'ready', tokens: { accessToken, refreshToken } };
   }
 
+  // The backend nests the real signal as `error.code`; the flat fields are
+  // fallbacks for other shapes.
   const marker = (
-    readString(body, 'error', 'status', 'detail', 'message') ?? ''
+    readString(asRecord(body.error), 'code', 'message') ??
+    readString(body, 'error', 'status', 'detail', 'message') ??
+    ''
   ).toLowerCase();
 
+  if (marker.includes(SLOW_DOWN_MARKER)) {
+    return { state: 'slow_down' };
+  }
   if (TERMINAL_MARKERS.some((term) => marker.includes(term))) {
     return { state: 'terminal', reason: marker };
   }
@@ -247,13 +275,14 @@ export function startDeviceLogin(onCode: (code: DeviceCode) => void): Promise<De
 
     onCode({ userCode, verificationUrl, expiresAt });
 
+    let intervalMs = pollIntervalMs;
     for (;;) {
       signal.throwIfAborted();
       if (Date.now() >= expiresAt) {
         throw new Error('[device-login] the code expired before sign-in completed');
       }
 
-      const poll = await postJson(upstreamUrl(POLL_PATH), { long_code: longCode }, 'device poll', signal);
+      const poll = await postJson(upstreamUrl(POLL_PATH), { device_code: longCode }, 'device poll', signal);
       const outcome = readPollResponse(poll.status, poll.body);
 
       if (outcome.state === 'ready') {
@@ -263,8 +292,14 @@ export function startDeviceLogin(onCode: (code: DeviceCode) => void): Promise<De
       if (outcome.state === 'terminal') {
         throw new Error(`[device-login] sign-in did not complete: ${outcome.reason}`);
       }
+      if (outcome.state === 'slow_down') {
+        // The server enforces a minimum spacing; keep the longer interval for
+        // the rest of the attempt rather than tripping it again next poll.
+        intervalMs += pollIntervalMs;
+        logDeviceLogin('poll asked to slow down', { intervalMs });
+      }
 
-      await abortableDelay(pollIntervalMs, signal);
+      await abortableDelay(intervalMs, signal);
     }
   })();
 
