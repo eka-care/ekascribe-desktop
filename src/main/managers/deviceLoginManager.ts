@@ -22,14 +22,6 @@ import { injectElectronEnv } from './ekascribeWebManager';
 const INITIATE_PATH = '/connect-auth/v1/device/code';
 const POLL_PATH = '/connect-auth/v1/device/token';
 
-/**
- * Where the user enters the code, used only if the initiate response omits one
- * (`verification_uri_complete` prefills the code, so it is preferred). Derived
- * from the configured upstream rather than hardcoded, so it follows whichever
- * backend the build points at instead of stranding hosted builds on dev.
- */
-const VERIFICATION_PATH = '/auth/activate';
-
 /** Overridden by `interval` / `expires_in` in the initiate response when present. */
 const DEFAULT_POLL_INTERVAL_MS = 5000;
 const DEFAULT_CODE_LIFETIME_MS = 10 * 60 * 1000;
@@ -157,10 +149,14 @@ async function postJson(
 /** Maps the initiate response onto what the flow and the UI need. */
 function readInitiateResponse(body: Record<string, unknown>): InitiateResult {
   const userCode = readString(body, 'user_code', 'userCode');
-  const longCode = readString(body, 'long_code', 'longCode', 'device_code');
+  const longCode = readString(body, 'device_code', 'long_code', 'longCode');
+  // `_complete` carries the code as a query param, so the user only has to click.
+  const verificationUrl = readString(body, 'verification_uri_complete', 'verification_uri');
 
-  if (!userCode || !longCode) {
-    throw new Error('[device-login] initiate response missing user_code or long_code');
+  if (!userCode || !longCode || !verificationUrl) {
+    throw new Error(
+      '[device-login] initiate response missing user_code, device_code or verification_uri'
+    );
   }
 
   const expiresInSec = readNumber(body, 'expires_in', 'expiresIn');
@@ -169,10 +165,7 @@ function readInitiateResponse(body: Record<string, unknown>): InitiateResult {
   return {
     userCode,
     longCode,
-    // `_complete` carries the code as a query param, so the user only has to click.
-    verificationUrl:
-      readString(body, 'verification_uri_complete', 'verification_uri', 'verification_url') ??
-      upstreamUrl(VERIFICATION_PATH),
+    verificationUrl,
     expiresAt: Date.now() + (expiresInSec !== null ? expiresInSec * 1000 : DEFAULT_CODE_LIFETIME_MS),
     pollIntervalMs: intervalSec !== null ? intervalSec * 1000 : DEFAULT_POLL_INTERVAL_MS,
   };
