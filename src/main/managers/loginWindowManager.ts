@@ -1,6 +1,9 @@
 import { BrowserWindow, screen } from 'electron';
 
-type PipState = { type: 'waiting' } | { type: 'error'; message: string };
+type PipState =
+  | { type: 'waiting' }
+  | { type: 'code'; userCode: string; verificationUrl: string; expiresAt: number }
+  | { type: 'error'; message: string };
 
 const PIP_WIDTH = 340;
 const PIP_HEIGHT = 440;

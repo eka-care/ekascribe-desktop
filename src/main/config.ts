@@ -7,7 +7,7 @@
 // const FORCE_AUTH = true;
 
 // export const FORCE_AUTHENTICATED = !app.isPackaged && FORCE_AUTH;
-export const FORCE_AUTHENTICATED = true;
+export const FORCE_AUTHENTICATED = false;
 
 /**
  * Renderer talks to the upstream API directly — the Express proxy is bypassed.
@@ -50,7 +50,7 @@ export const ELECTRON_API_ORIGIN = 'app://ekascribe';
  * recorder's `getUserMedia` needs a trustworthy context), and a secure page fetching `http://`
  * is active mixed content, which Chromium blocks outright.
  */
-const DEFAULT_API_UPSTREAM = 'https://vaarta.bharatai.gov.in';
+const DEFAULT_API_UPSTREAM = 'https://bharat-backend.dev.eka.care';
 
 /**
  * Real backend the proxy forwards to. Override with `EKA_API_UPSTREAM` in `electron.env`

@@ -74,6 +74,15 @@ function toCurl(method: string, url: string, headers: Record<string, string>, bo
   return parts.join(' ');
 }
 
+/** True only for the configured upstream — not the other eka.care hosts. */
+function isVaartaUpstream(url: string): boolean {
+  try {
+    return new URL(url).origin === new URL(getApiUpstreamBase()).origin;
+  } catch {
+    return false;
+  }
+}
+
 /** True when this URL is the real upstream API (not the loopback proxy / page). */
 function isUpstreamApiTarget(url: string): boolean {
   try {
@@ -139,6 +148,16 @@ async function handleNetworkRequest(
     delete headers.Origin;
     delete headers.Referer;
     delete headers.referer;
+  }
+
+  // This transport bypasses the `onBeforeSendHeaders` hook below (that only sees
+  // renderer-initiated requests), so the vaarta upstream's `Authorization: Bearer`
+  // has to be attached here too — the web app sends the legacy `auth` header only.
+  if (isVaartaUpstream(url) && !headers['Authorization'] && !headers['authorization']) {
+    const authToken = getAuthToken();
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
   }
 
   // Backend calls go through the Express proxy, which owns credential injection and the
@@ -218,9 +237,15 @@ export function registerNetworkIpcHandlers(): void {
     },
     (details, callback) => {
       const requestHeaders = { ...details.requestHeaders };
-      if (!requestHeaders['auth'] && !requestHeaders['Auth']) {
-        const authToken = getAuthToken();
-        if (authToken) {
+      const authToken = getAuthToken();
+      if (authToken) {
+        if (details.url.startsWith(upstream)) {
+          // The vaarta upstream authenticates on `Authorization: Bearer`.
+          if (!requestHeaders['Authorization'] && !requestHeaders['authorization']) {
+            requestHeaders['Authorization'] = `Bearer ${authToken}`;
+          }
+        } else if (!requestHeaders['auth'] && !requestHeaders['Auth']) {
+          // Other eka.care hosts keep the legacy `auth` header contract.
           requestHeaders['auth'] = authToken;
         }
       }

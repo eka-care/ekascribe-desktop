@@ -8,7 +8,6 @@ import {
   persistConnectAuthTokens,
   isLogoutInProgress,
 } from './authManager';
-import { captureError, addBreadcrumb } from './sentryManager';
 import { getApiUpstreamBase, ELECTRON_API_ORIGIN } from '../config';
 
 type ConnectAuthRefreshResponse = {
@@ -58,7 +57,6 @@ function logRefresh(message: string, meta?: unknown): void {
     const logFilePath = path.join(app.getPath('userData'), 'login.log');
     fs.appendFileSync(logFilePath, line, 'utf8');
   } catch { /* best-effort */ }
-  addBreadcrumb('auth', message, meta && typeof meta === 'object' ? meta as Record<string, unknown> : undefined);
   console.log(line.trim());
 }
 
@@ -76,7 +74,7 @@ async function refreshTokenOnMain(ekaHost: string, clientId: string): Promise<Re
     // rather than the Express proxy: the proxy retries 401s by calling this refresher, so
     // routing the refresh back through it would recurse.
     const refreshUrl = new URL(
-      `${ekaHost}/connect-auth/v1/account/refresh-token`,
+      `${ekaHost}/connect-auth/v1/refresh`,
       getApiUpstreamBase(),
     ).toString();
     const response = await (net.fetch as Function)(
@@ -121,7 +119,6 @@ async function refreshTokenOnMain(ekaHost: string, clientId: string): Promise<Re
     return { ok: true, isNetworkError: false };
   } catch (error) {
     const networkError = isNetworkLevelError(error);
-    captureError(error, { domain: 'auth', component: 'token_refresh', extra: { isNetworkError: networkError } });
     return { ok: false, isNetworkError: networkError };
   } finally {
     clearTimeout(timer);

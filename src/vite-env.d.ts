@@ -5,23 +5,9 @@ interface AuthApi {
   getRefreshToken: () => Promise<string | null>;
   getAuthToken: () => Promise<string | null>;
   getTokens: () => Promise<{ authToken: string | null; refreshToken: string | null }>;
-  startOidcLogin: () => Promise<{
+  startLogin: () => Promise<{
     accessToken: string;
     refreshToken: string;
-    tokenType: string | null;
-    expiresIn: number | null;
-    scope: string | null;
-    idToken: string | null;
-    clientId: string;
-    clientSecret: string;
-  }>;
-  refreshOidcToken: () => Promise<{
-    accessToken: string;
-    refreshToken: string;
-    tokenType: string | null;
-    expiresIn: number | null;
-    scope: string | null;
-    idToken: string | null;
   }>;
   logout: () => Promise<void>;
 }
@@ -135,8 +121,6 @@ interface NotificationApi {
   onClick(callback: (data: Record<string, unknown> | null) => void): () => void;
 }
 
-type LoginPipStatePayload = { type: 'waiting' } | { type: 'error'; message: string };
-
 interface LoginPipApi {
   onEnter: (callback: () => void) => () => void;
   onExit: (callback: (route: string) => void) => () => void;
@@ -145,6 +129,12 @@ interface LoginPipApi {
 }
 
 declare global {
+  /** Wire format of `login-pip:state`; mirrors `PipState` in loginWindowManager. */
+  type LoginPipStatePayload =
+    | { type: 'waiting' }
+    | { type: 'code'; userCode: string; verificationUrl: string; expiresAt: number }
+    | { type: 'error'; message: string };
+
   interface Window {
     authApi: AuthApi;
     recordingApi: RecordingApi;

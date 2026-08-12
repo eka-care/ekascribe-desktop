@@ -16,8 +16,8 @@ export function AuthPage() {
     setError(null);
     setIsLoading(true);
     try {
-      const oidcResult = await window.authApi.startOidcLogin();
-      await window.authApi.onAuthSuccess(oidcResult.refreshToken, oidcResult.accessToken);
+      const tokens = await window.authApi.startLogin();
+      window.authApi.onAuthSuccess(tokens.refreshToken, tokens.accessToken);
     } catch (authError) {
       const message = authError instanceof Error ? authError.message : String(authError);
       const isUserCancelled = /abort|cancel/i.test(message);
@@ -148,28 +148,6 @@ export function AuthPage() {
             </svg>
           )}
         </button>
-
-        <p style={{ margin: '14px 0 0', fontSize: 13, lineHeight: '18px', color: '#767676' }}>
-          Don&apos;t have an account?{' '}
-          <button
-            type="button"
-            className="auth-signup-link"
-            onClick={() => void handleLogin()}
-            disabled={isLoading}
-            style={{
-              padding: 0,
-              border: 0,
-              background: 'transparent',
-              color: '#215fff',
-              fontSize: 13,
-              lineHeight: '18px',
-              fontWeight: 500,
-              cursor: isLoading ? 'not-allowed' : 'pointer',
-            }}
-          >
-            Sign up
-          </button>
-        </p>
 
         {error ? (
           <div

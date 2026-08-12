@@ -2,7 +2,7 @@
 import React from 'react';
 import ekaLogo from './eka-logo.svg';
 
-type PipState = { type: 'waiting' } | { type: 'error'; message: string };
+type PipState = LoginPipStatePayload;
 
 const DOT_ANIMATION = `
   @keyframes pip-dot-pulse {
@@ -11,14 +11,33 @@ const DOT_ANIMATION = `
   }
 `;
 
+function formatRemaining(ms: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
 export function LoginPipView() {
   const [state, setState] = React.useState<PipState>({ type: 'waiting' });
   const [countdown, setCountdown] = React.useState(3);
+  const [copied, setCopied] = React.useState(false);
+  const [remainingMs, setRemainingMs] = React.useState(0);
 
   React.useEffect(() => {
     const unsub = window.loginPipApi.onState((s) => setState(s));
     return unsub;
   }, []);
+
+  // Drive the expiry countdown off the absolute deadline, so a slow render or a
+  // sleeping machine can't leave it showing more time than actually remains.
+  React.useEffect(() => {
+    if (state.type !== 'code') return;
+    const tick = () => setRemainingMs(state.expiresAt - Date.now());
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [state]);
 
   React.useEffect(() => {
     if (state.type !== 'error') return;
@@ -37,6 +56,17 @@ export function LoginPipView() {
 
   const handleCancel = () => {
     window.loginPipApi.cancelLogin();
+  };
+
+  const handleOpenLink = (url: string) => {
+    void window.systemApi.openExternal(url);
+  };
+
+  const handleCopyCode = (code: string) => {
+    void navigator.clipboard.writeText(code).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
   };
 
   return (
@@ -98,7 +128,7 @@ export function LoginPipView() {
           {/* Logo */}
           <img
             src={ekaLogo}
-            alt="EkaScribe"
+            alt="Vaarta"
             style={{ width: 72, height: 72, marginBottom: 28 }}
           />
 
@@ -113,7 +143,7 @@ export function LoginPipView() {
               letterSpacing: '-0.3px',
             }}
           >
-            Sign in to your EkaScribe account…
+            Sign in to your Vaarta account…
           </div>
 
           {/* Subtitle */}
@@ -125,8 +155,88 @@ export function LoginPipView() {
               marginBottom: 32,
             }}
           >
-            EkaScribe needs to open your browser to sign you in. Complete the sign‑in there and this window will close automatically.
+            {state.type === 'code'
+              ? 'Enter this code after opening the link below. This window closes on its own once you’re signed in.'
+              : 'Getting your sign‑in code ready…'}
           </div>
+
+          {state.type === 'code' && (
+            <div style={{ width: '100%' }}>
+              {/* The code itself — the one thing the user must transcribe. */}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                  padding: '14px 16px',
+                  borderRadius: 10,
+                  border: '1px solid #e5e5e5',
+                  background: '#f7f8fa',
+                }}
+              >
+                <span
+                  style={{
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                    fontSize: 28,
+                    fontWeight: 600,
+                    letterSpacing: '3px',
+                    color: '#1a1a1a',
+                    userSelect: 'text',
+                  }}
+                >
+                  {state.userCode}
+                </span>
+                <button
+                  onClick={() => handleCopyCode(state.userCode)}
+                  style={{
+                    border: '1px solid #e5e5e5',
+                    background: '#ffffff',
+                    borderRadius: 8,
+                    padding: '6px 10px',
+                    fontSize: 12,
+                    fontWeight: 500,
+                    color: copied ? '#1a7f3c' : '#4a4a4a',
+                    cursor: 'pointer',
+                    flexShrink: 0,
+                  }}
+                  title="Copy code"
+                >
+                  {copied ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+
+              {/* Subtext + the link, opened only on click. */}
+              <div style={{ fontSize: 13, color: '#767676', marginTop: 14, lineHeight: 1.5 }}>
+                Open this link in browser
+              </div>
+              <button
+                onClick={() => handleOpenLink(state.verificationUrl)}
+                style={{
+                  marginTop: 6,
+                  padding: 0,
+                  border: 0,
+                  background: 'transparent',
+                  color: '#215FFF',
+                  fontSize: 13,
+                  fontWeight: 500,
+                  lineHeight: 1.4,
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                  wordBreak: 'break-all',
+                  textDecoration: 'underline',
+                }}
+              >
+                {state.verificationUrl}
+              </button>
+
+              <div style={{ fontSize: 12, color: '#aaa', marginTop: 16 }}>
+                {remainingMs > 0
+                  ? `Code expires in ${formatRemaining(remainingMs)}`
+                  : 'Code expired — close this and try again'}
+              </div>
+            </div>
+          )}
 
           {/* State indicator */}
           {state.type === 'waiting' && (
