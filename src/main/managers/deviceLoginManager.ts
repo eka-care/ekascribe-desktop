@@ -4,21 +4,9 @@ import { app, net } from 'electron';
 import { getApiUpstreamBase } from '../config';
 import { injectElectronEnv } from './ekascribeWebManager';
 
-/**
- * Device-code login: the desktop app asks the backend for a short `user_code`
- * (shown to the user) paired with a `long_code` (kept private). The user opens
- * the verification link in a browser and enters the short code there; meanwhile
- * this process polls with the long code until the backend hands back tokens.
- *
- * Chosen over a redirect-based flow because it needs no loopback callback
- * server and no custom-scheme round trip — the browser never has to find its
- * way back to the app.
- *
- * ─── BACKEND CONTRACT ───────────────────────────────────────────────────────
- * Everything the backend dictates is in this block. When the endpoints are
- * finalised, these are the only lines that change; the flow below is written
- * against the mappers, not against any particular payload shape.
- */
+// Device-code login (RFC 8628): the backend issues a short user_code for the
+// human and a private device_code we poll with until it returns tokens.
+// ─── BACKEND CONTRACT: everything the server dictates lives in this block ───
 const INITIATE_PATH = '/connect-auth/v1/device/code';
 const POLL_PATH = '/connect-auth/v1/device/token';
 
@@ -26,19 +14,11 @@ const POLL_PATH = '/connect-auth/v1/device/token';
 const DEFAULT_POLL_INTERVAL_MS = 5000;
 const DEFAULT_CODE_LIFETIME_MS = 10 * 60 * 1000;
 
-/**
- * Markers meaning "the user hasn't finished yet" rather than a failure. The
- * backend returns these with HTTP 400, so status alone can't be trusted — the
- * body's `error.code` is what actually distinguishes waiting from failing.
- */
+// Sent with HTTP 400, so error.code — not the status — says waiting vs failed.
 const PENDING_MARKERS = ['authorization_pending', 'pending', 'waiting'];
 /** Server asking us to back off; polling continues at a longer interval. */
 const SLOW_DOWN_MARKER = 'slow_down';
-/**
- * Markers that mean the attempt is over and polling must stop.
- * `unsupported_auth_mode` means the deployment is not running AUTH_MODE=jwt,
- * so device sign-in is unavailable there at all.
- */
+// Stop polling. unsupported_auth_mode = deployment isn't running AUTH_MODE=jwt.
 const TERMINAL_MARKERS = [
   'expired_token',
   'expired',
@@ -57,11 +37,11 @@ export type DeviceLoginTokens = {
   refreshToken: string;
 };
 
-/** What the UI needs to render while polling runs in the background. */
+/** What the UI renders while polling runs in the background. */
 export type DeviceCode = {
   userCode: string;
   verificationUrl: string;
-  /** Epoch ms the code stops being usable, for the countdown. */
+  /** Epoch ms, for the countdown. */
   expiresAt: number;
 };
 
@@ -75,7 +55,7 @@ type PollOutcome =
 
 let activeLogin: { promise: Promise<DeviceLoginTokens>; controller: AbortController } | null = null;
 
-/** Mirrors `logLogin` in authManager — same file, so a login reads as one story. */
+// Writes to authManager's login.log so a login reads as one story.
 function logDeviceLogin(message: string, meta?: unknown): void {
   const timestamp = new Date().toISOString();
   const line = `[${timestamp}] ${message}${meta ? ` ${JSON.stringify(meta)}` : ''}\n`;
@@ -113,10 +93,7 @@ function readNumber(source: Record<string, unknown>, ...keys: string[]): number 
   return null;
 }
 
-/**
- * POSTs JSON and hands back the parsed body plus the status, because this flow
- * reads meaning from both: a poll can signal "still pending" through either.
- */
+// Returns status alongside the body — a poll signals pending through either.
 async function postJson(
   url: string,
   body: Record<string, unknown>,
@@ -127,8 +104,7 @@ async function postJson(
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify(body),
-    // Cancelling the login tears down an in-flight request immediately rather
-    // than leaving the user waiting out the per-request timeout.
+    // Cancel kills an in-flight request instead of waiting out the timeout.
     signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
     bypassCustomProtocolHandlers: true,
   })) as Response;
@@ -139,7 +115,7 @@ async function postJson(
     try {
       parsed = asRecord(JSON.parse(raw));
     } catch {
-      // Non-JSON body: status still carries meaning, so don't fail outright.
+      // Status still carries meaning, so don't fail outright.
       logDeviceLogin(`${operation} returned non-JSON body`, { status: response.status });
     }
   }
@@ -150,7 +126,7 @@ async function postJson(
 function readInitiateResponse(body: Record<string, unknown>): InitiateResult {
   const userCode = readString(body, 'user_code', 'userCode');
   const longCode = readString(body, 'device_code', 'long_code', 'longCode');
-  // `_complete` carries the code as a query param, so the user only has to click.
+  // _complete prefills the code, so the user only has to click.
   const verificationUrl = readString(body, 'verification_uri_complete', 'verification_uri');
 
   if (!userCode || !longCode || !verificationUrl) {
@@ -171,13 +147,8 @@ function readInitiateResponse(body: Record<string, unknown>): InitiateResult {
   };
 }
 
-/**
- * Classifies one poll. Tokens win outright; otherwise a pending marker (in any
- * of the usual fields, or a bare 202) keeps the loop alive. Anything explicitly
- * terminal stops it. An unrecognised failure is treated as pending on purpose —
- * a transient 5xx mid-login should not throw away a code the user is still
- * typing; the deadline is what ultimately ends the loop.
- */
+// Unrecognised failures count as pending on purpose: a transient 5xx shouldn't
+// discard a code the user is still typing. The deadline ends the loop.
 function readPollResponse(status: number, body: Record<string, unknown>): PollOutcome {
   const accessToken = readString(body, 'access_token', 'accessToken');
   const refreshToken = readString(body, 'refresh_token', 'refreshToken');
@@ -186,8 +157,7 @@ function readPollResponse(status: number, body: Record<string, unknown>): PollOu
     return { state: 'ready', tokens: { accessToken, refreshToken } };
   }
 
-  // The backend nests the real signal as `error.code`; the flat fields are
-  // fallbacks for other shapes.
+  // The real signal is nested at error.code; flat fields are fallbacks.
   const marker = (
     readString(asRecord(body.error), 'code', 'message') ??
     readString(body, 'error', 'status', 'detail', 'message') ??
@@ -204,8 +174,7 @@ function readPollResponse(status: number, body: Record<string, unknown>): PollOu
     return { state: 'pending' };
   }
   if (status === 200 && !marker) {
-    // 200 with neither tokens nor a marker — the backend acknowledged but has
-    // nothing yet.
+    // Acknowledged, but nothing yet.
     return { state: 'pending' };
   }
 
@@ -232,13 +201,8 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/**
- * Runs a full device login. `onCode` fires as soon as the backend issues the
- * code — before polling starts — so the UI can paint it immediately.
- *
- * Single-flight: a second call while one is in flight joins the existing
- * attempt rather than issuing a competing code.
- */
+/** Runs a device login; `onCode` fires before polling so the UI paints at once. */
+// Single-flight: a concurrent call joins the attempt instead of issuing a rival code.
 export function startDeviceLogin(onCode: (code: DeviceCode) => void): Promise<DeviceLoginTokens> {
   if (activeLogin) {
     return activeLogin.promise;
@@ -248,9 +212,7 @@ export function startDeviceLogin(onCode: (code: DeviceCode) => void): Promise<De
   const { signal } = controller;
 
   const promise = (async () => {
-    // Login runs before ekascribe-web (and the proxy) boot, so nothing has read
-    // electron.env yet — without this an EKA_API_UPSTREAM override would silently
-    // not apply to the login path, only to everything after it.
+    // Login precedes ekascribe-web boot, so nothing has read electron.env yet.
     injectElectronEnv();
     logDeviceLogin('device login started', { initiateUrl: upstreamUrl(INITIATE_PATH) });
 
@@ -287,8 +249,7 @@ export function startDeviceLogin(onCode: (code: DeviceCode) => void): Promise<De
         throw new Error(`[device-login] sign-in did not complete: ${outcome.reason}`);
       }
       if (outcome.state === 'slow_down') {
-        // The server enforces a minimum spacing; keep the longer interval for
-        // the rest of the attempt rather than tripping it again next poll.
+        // Keep the longer interval rather than tripping the limit again.
         intervalMs += pollIntervalMs;
         logDeviceLogin('poll asked to slow down', { intervalMs });
       }
@@ -297,9 +258,7 @@ export function startDeviceLogin(onCode: (code: DeviceCode) => void): Promise<De
     }
   })();
 
-  // Only clear the slot if it is still ours — cancelDeviceLogin releases it
-  // synchronously, so a fresh login may already have claimed it by the time this
-  // attempt finishes unwinding.
+  // Only clear the slot if still ours — cancel releases it synchronously.
   const entry = { promise, controller };
   activeLogin = entry;
   void promise.catch(() => undefined).finally(() => {
@@ -309,12 +268,8 @@ export function startDeviceLogin(onCode: (code: DeviceCode) => void): Promise<De
   return promise;
 }
 
-/**
- * Cancels an in-flight login (the PIP panel's Cancel button). No-op if idle.
- *
- * Releases the single-flight slot immediately so a user who cancels and clicks
- * Login again gets a fresh code, rather than joining the attempt being torn down.
- */
+/** Cancels an in-flight login; no-op if idle. */
+// Frees the slot at once so an immediate retry gets a fresh code.
 export function cancelDeviceLogin(reason: Error): void {
   const inFlight = activeLogin;
   if (!inFlight) return;
