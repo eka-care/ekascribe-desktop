@@ -50,7 +50,7 @@ export const ELECTRON_API_ORIGIN = 'app://ekascribe';
  * recorder's `getUserMedia` needs a trustworthy context), and a secure page fetching `http://`
  * is active mixed content, which Chromium blocks outright.
  */
-const DEFAULT_API_UPSTREAM = 'https://bharat-backend.dev.eka.care';
+const DEFAULT_API_UPSTREAM = 'https://vaarta.bharatai.gov.in';
 
 /**
  * Real backend the proxy forwards to. Override with `EKA_API_UPSTREAM` in `electron.env`

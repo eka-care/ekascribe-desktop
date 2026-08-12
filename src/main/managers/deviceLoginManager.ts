@@ -23,11 +23,12 @@ const INITIATE_PATH = '/connect-auth/v1/device/code';
 const POLL_PATH = '/connect-auth/v1/device/token';
 
 /**
- * Where the user enters the code. The initiate response wins if it returns one
- * (`verification_uri_complete` prefills the code, so it is preferred), letting the
- * backend move this without a client release — this constant is only the fallback.
+ * Where the user enters the code, used only if the initiate response omits one
+ * (`verification_uri_complete` prefills the code, so it is preferred). Derived
+ * from the configured upstream rather than hardcoded, so it follows whichever
+ * backend the build points at instead of stranding hosted builds on dev.
  */
-const FALLBACK_VERIFICATION_URL = 'https://bharat-backend.dev.eka.care/auth/activate';
+const VERIFICATION_PATH = '/auth/activate';
 
 /** Overridden by `interval` / `expires_in` in the initiate response when present. */
 const DEFAULT_POLL_INTERVAL_MS = 5000;
@@ -171,7 +172,7 @@ function readInitiateResponse(body: Record<string, unknown>): InitiateResult {
     // `_complete` carries the code as a query param, so the user only has to click.
     verificationUrl:
       readString(body, 'verification_uri_complete', 'verification_uri', 'verification_url') ??
-      FALLBACK_VERIFICATION_URL,
+      upstreamUrl(VERIFICATION_PATH),
     expiresAt: Date.now() + (expiresInSec !== null ? expiresInSec * 1000 : DEFAULT_CODE_LIFETIME_MS),
     pollIntervalMs: intervalSec !== null ? intervalSec * 1000 : DEFAULT_POLL_INTERVAL_MS,
   };
