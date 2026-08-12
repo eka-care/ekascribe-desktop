@@ -4,7 +4,6 @@ import { ChildProcess, execFile, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { NativeBridge } from '../nativeCommunication/NativeBridge';
-import { captureError, captureLog, addBreadcrumb } from './sentryManager';
 
 // ─── Shared logging ───────────────────────────────────────────────────────────
 
@@ -18,7 +17,6 @@ export function logOverlayHelper(message: string, meta?: unknown): void {
   } catch {
     // best-effort file logging only
   }
-  addBreadcrumb('overlay', message, meta && typeof meta === 'object' ? meta as Record<string, unknown> : undefined);
   console.log(line.trim());
 }
 
@@ -175,12 +173,11 @@ export function launchNativeBottomView(): void {
     }
 
     launchedProcess.on('error', (error) => {
+      console.error('[native] mac overlay process error', error);
       if (macOverlayProcess?.pid === launchedProcess.pid) {
         macOverlayProcess = null;
         bottomViewVisible = false;
       }
-      captureLog('native_helper_crashed', { platform: 'darwin', error: error.message });
-      captureError(error, { domain: 'infra', component: 'native_helper', extra: { platform: 'darwin' } });
     });
     launchedProcess.on('exit', () => {
       if (macOverlayProcess?.pid === launchedProcess.pid) {
@@ -540,8 +537,6 @@ export function launchWindowsOverlay(args: string[] = []): void {
     if (text) logOverlayHelper('overlay stderr', { text });
   });
   windowsOverlayProcess.on('error', (err) => {
-    captureLog('native_helper_crashed', { platform: 'win32', error: err.message });
-    captureError(err, { domain: 'infra', component: 'native_helper', extra: { platform: 'win32', exePath } });
     windowsOverlayProcess = null;
     scheduleOverlayRestart(args, `spawn-error:${err.message}`);
   });

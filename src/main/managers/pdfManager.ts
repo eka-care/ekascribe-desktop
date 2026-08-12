@@ -1,5 +1,4 @@
 import { BrowserWindow, ipcMain } from 'electron';
-import { captureError } from './sentryManager';
 
 export function registerPdfIpcHandlers(): void {
   ipcMain.handle('print:htmlToPdf', async (_event, html: string) => {
@@ -28,7 +27,6 @@ export function registerPdfIpcHandlers(): void {
 
       return pdf;
     } catch (error) {
-      captureError(error, { domain: 'infra', component: 'pdf' });
       throw error;
     } finally {
       if (!win.isDestroyed()) win.destroy();

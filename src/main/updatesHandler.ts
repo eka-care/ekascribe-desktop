@@ -2,7 +2,6 @@ import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import fs from 'node:fs';
 import path from 'node:path';
-import { captureError, captureLog, addBreadcrumb } from './managers/sentryManager';
 
 const AUTO_UPDATE_FEED_URL = 'https://updates.eka.care/ekascribe/latest/';
 const AUTO_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 60 * 1000;
@@ -16,7 +15,6 @@ export function logUpdater(message: string, meta?: unknown): void {
   } catch {
     // best-effort file logging only
   }
-  addBreadcrumb('updater', message, meta && typeof meta === 'object' ? meta as Record<string, unknown> : undefined);
 }
 
 let log: (message: string, meta?: unknown) => void = () => {};
@@ -70,7 +68,6 @@ export function runAutoUpdateCheck(reason: string): void {
       });
     })
     .catch((error: unknown) => {
-      captureError(error, { domain: 'infra', component: 'updater', extra: { reason } });
       log('auto update check failed', {
         reason,
         error: error instanceof Error ? error.message : String(error),
@@ -253,7 +250,6 @@ function startUpdateInstallFlow(): void {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send('desktop:update-available', { version: latestUpdateVersion });
     }
-    captureError(error, { domain: 'infra', component: 'updater', extra: { version: latestUpdateVersion, action: 'download' } });
     if (updatePopupAwaitingDownloadResult) {
       updatePopupAwaitingDownloadResult = false;
       resetUpdatePopupAfterDownloadFailure(error);
@@ -316,7 +312,6 @@ export function setupAutoUpdates(
       isUpdateDownloaded = true;
       isUpdateDownloadInProgress = false;
       updatePopupAwaitingDownloadResult = false;
-      captureLog('app_updated', { version: info.version });
       log('update downloaded', { version: info.version });
       logUpdater('update downloaded', { version: info.version });
       for (const win of BrowserWindow.getAllWindows()) {
@@ -325,7 +320,6 @@ export function setupAutoUpdates(
     });
     autoUpdater.on('error', (error) => {
       isUpdateDownloadInProgress = false;
-      captureError(error, { domain: 'infra', component: 'updater', extra: { version: latestUpdateVersion } });
       if (updatePopupAwaitingDownloadResult) {
         updatePopupAwaitingDownloadResult = false;
         resetUpdatePopupAfterDownloadFailure(error);

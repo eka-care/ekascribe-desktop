@@ -12,7 +12,6 @@ import {
 } from '../config';
 import { getAuthToken } from './authManager';
 import { refreshConnectAuthTokensDeduped } from './connectAuthRefresh';
-import { captureError } from './sentryManager';
 import { injectElectronEnv } from './ekascribeWebManager';
 
 /**
@@ -269,7 +268,6 @@ async function fetchUpstream(
     })) as Response_;
   } catch (error) {
     console.warn('[apiProxy] upstream request failed', { method, url, error: String(error) });
-    captureError(error, { domain: 'infra', component: 'api_proxy', extra: { method, url } });
     if (!res.headersSent) {
       res.status(502).json({ error: 'upstream_unreachable', message: String(error) });
     }

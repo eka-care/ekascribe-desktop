@@ -2,7 +2,6 @@ import { app, BrowserWindow, ipcMain } from 'electron';
 import { showNotification } from './notificationManager';
 import path from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
-import { captureError } from './sentryManager';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const baileysModule = require('@whiskeysockets/baileys');
@@ -54,7 +53,7 @@ function broadcastStatusChange(): void {
   broadcastToAllWindows('whatsapp:status-change', connectionStatus);
 }
 
-function getBrowserConfig(name = 'EkaScribe') {
+function getBrowserConfig(name = 'Vaarta') {
   return [name, name, name]
 }
 
@@ -210,7 +209,6 @@ async function sendWhatsAppDocument(
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     console.error('[whatsappManager] send failed:', error);
-    captureError(error, { domain: 'infra', component: 'whatsapp', extra: { action: 'send_document', fileName } });
     return { success: false, error: message };
   }
 }
@@ -250,7 +248,6 @@ export function initWhatsAppAutoConnect(): void {
   if (existsSync(credsPath)) {
     console.log('[whatsappManager] found existing auth state, auto-connecting');
     connectWhatsApp().catch((error) => {
-      captureError(error, { domain: 'infra', component: 'whatsapp', extra: { action: 'auto_connect' } });
       console.error('[whatsappManager] auto-connect failed', error);
     });
   }

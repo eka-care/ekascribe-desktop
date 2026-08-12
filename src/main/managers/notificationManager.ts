@@ -114,7 +114,7 @@ function getPermissionPromptHtml(): string {
         <span class="icon">🔔</span>
         <span class="title">Stay in the loop</span>
       </div>
-      <div class="body">Allow EkaScribe to notify you when your session analysis is ready or a prescription has been sent.</div>
+      <div class="body">Allow Vaarta to notify you when your session analysis is ready.</div>
       <div class="actions">
         <button id="allow">Allow Notifications</button>
         <button id="deny">Not Now</button>
@@ -231,7 +231,7 @@ export function registerNotificationIpcHandlers(): void {
     if (action === 'allow') {
       store.set(NEVER_ASK_KEY, true);
       showNotification({
-        title: 'EkaScribe',
+        title: 'Vaarta',
         body: 'Enable notifications in System Settings to receive updates on your sessions.',
       });
       void shell.openExternal('x-apple.systempreferences:com.apple.preference.notifications');
