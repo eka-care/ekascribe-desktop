@@ -32,6 +32,10 @@ const TERMINAL_MARKERS = [
 
 const REQUEST_TIMEOUT_MS = 15000;
 
+// Give up after this many polls we can't interpret, so a persistently broken
+// endpoint reports itself instead of masquerading as "code expired" 10min later.
+const MAX_UNRECOGNISED_POLLS = 5;
+
 export type DeviceLoginTokens = {
   accessToken: string;
   refreshToken: string;
@@ -51,7 +55,8 @@ type PollOutcome =
   | { state: 'pending' }
   | { state: 'slow_down' }
   | { state: 'ready'; tokens: DeviceLoginTokens }
-  | { state: 'terminal'; reason: string };
+  | { state: 'terminal'; reason: string }
+  | { state: 'unknown'; reason: string };
 
 let activeLogin: { promise: Promise<DeviceLoginTokens>; controller: AbortController } | null = null;
 
@@ -147,8 +152,8 @@ function readInitiateResponse(body: Record<string, unknown>): InitiateResult {
   };
 }
 
-// Unrecognised failures count as pending on purpose: a transient 5xx shouldn't
-// discard a code the user is still typing. The deadline ends the loop.
+// Anything uninterpretable is 'unknown', not 'pending': the caller retries it a
+// few times so a transient 5xx is survivable, then gives up with the real reason.
 function readPollResponse(status: number, body: Record<string, unknown>): PollOutcome {
   const accessToken = readString(body, 'access_token', 'accessToken');
   const refreshToken = readString(body, 'refresh_token', 'refreshToken');
@@ -178,8 +183,7 @@ function readPollResponse(status: number, body: Record<string, unknown>): PollOu
     return { state: 'pending' };
   }
 
-  logDeviceLogin('poll returned an unrecognised response; continuing to poll', { status, marker });
-  return { state: 'pending' };
+  return { state: 'unknown', reason: marker || `HTTP ${status}` };
 }
 
 /** Sleep that rejects the moment the login is cancelled. */
@@ -232,13 +236,25 @@ export function startDeviceLogin(onCode: (code: DeviceCode) => void): Promise<De
     onCode({ userCode, verificationUrl, expiresAt });
 
     let intervalMs = pollIntervalMs;
+    let unrecognisedPolls = 0;
     for (;;) {
       signal.throwIfAborted();
       if (Date.now() >= expiresAt) {
         throw new Error('[device-login] the code expired before sign-in completed');
       }
 
-      const poll = await postJson(upstreamUrl(POLL_PATH), { device_code: longCode }, 'device poll', signal);
+      let poll;
+      try {
+        poll = await postJson(upstreamUrl(POLL_PATH), { device_code: longCode }, 'device poll', signal);
+      } catch (pollError) {
+        // A cancelled login must stop; a dropped connection or a timed-out
+        // request must not, or one blip would discard a code that is still good.
+        if (signal.aborted) throw pollError;
+        logDeviceLogin('poll request failed; retrying', { error: String(pollError) });
+        await abortableDelay(intervalMs, signal);
+        continue;
+      }
+
       const outcome = readPollResponse(poll.status, poll.body);
 
       if (outcome.state === 'ready') {
@@ -247,6 +263,18 @@ export function startDeviceLogin(onCode: (code: DeviceCode) => void): Promise<De
       }
       if (outcome.state === 'terminal') {
         throw new Error(`[device-login] sign-in did not complete: ${outcome.reason}`);
+      }
+      if (outcome.state === 'unknown') {
+        unrecognisedPolls += 1;
+        logDeviceLogin('poll returned an unrecognised response', {
+          reason: outcome.reason,
+          count: unrecognisedPolls,
+        });
+        if (unrecognisedPolls >= MAX_UNRECOGNISED_POLLS) {
+          throw new Error(`[device-login] poll kept returning an unusable response: ${outcome.reason}`);
+        }
+      } else {
+        unrecognisedPolls = 0;
       }
       if (outcome.state === 'slow_down') {
         // Keep the longer interval rather than tripping the limit again.
