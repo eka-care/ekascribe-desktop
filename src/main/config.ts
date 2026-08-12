@@ -7,7 +7,7 @@
 // const FORCE_AUTH = true;
 
 // export const FORCE_AUTHENTICATED = !app.isPackaged && FORCE_AUTH;
-export const FORCE_AUTHENTICATED = true;
+export const FORCE_AUTHENTICATED = false;
 
 /**
  * Renderer talks to the upstream API directly — the Express proxy is bypassed.

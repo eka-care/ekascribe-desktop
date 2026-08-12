@@ -1,8 +1,9 @@
 /// <reference path="../../../../vite-env.d.ts" />
 import React from 'react';
 import ekaLogo from './eka-logo.svg';
+import DeviceCodePanel from './DeviceCodePanel';
 
-type PipState = { type: 'waiting' } | { type: 'error'; message: string };
+type PipState = LoginPipStatePayload;
 
 const DOT_ANIMATION = `
   @keyframes pip-dot-pulse {
@@ -17,6 +18,11 @@ export function LoginPipView() {
 
   React.useEffect(() => {
     const unsub = window.loginPipApi.onState((s) => setState(s));
+    // This view mounts only after the shrink, so the code push already
+    // happened — ask for the current state instead of waiting for the next one.
+    void window.loginPipApi.getState().then((s) => {
+      if (s) setState(s);
+    });
     return unsub;
   }, []);
 
@@ -98,7 +104,7 @@ export function LoginPipView() {
           {/* Logo */}
           <img
             src={ekaLogo}
-            alt="EkaScribe"
+            alt="Vaarta"
             style={{ width: 72, height: 72, marginBottom: 28 }}
           />
 
@@ -113,7 +119,7 @@ export function LoginPipView() {
               letterSpacing: '-0.3px',
             }}
           >
-            Sign in to your EkaScribe account…
+            Sign in to your Vaarta account…
           </div>
 
           {/* Subtitle */}
@@ -125,8 +131,19 @@ export function LoginPipView() {
               marginBottom: 32,
             }}
           >
-            EkaScribe needs to open your browser to sign you in. Complete the sign‑in there and this window will close automatically.
+            {state.type === 'code'
+              ? 'Enter this code after opening the link below. This window closes on its own once you’re signed in.'
+              : 'Getting your sign‑in code ready…'}
           </div>
+
+          {state.type === 'code' && (
+            <DeviceCodePanel
+              userCode={state.userCode}
+              verificationUrl={state.verificationUrl}
+              expiresAt={state.expiresAt}
+              variant="compact"
+            />
+          )}
 
           {/* State indicator */}
           {state.type === 'waiting' && (

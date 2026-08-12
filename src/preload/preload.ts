@@ -94,8 +94,7 @@ contextBridge.exposeInMainWorld('authApi', {
   getRefreshToken: () => ipcRenderer.invoke('auth:getRefreshToken'),
   getAuthToken: () => ipcRenderer.invoke('auth:getAuthToken'),
   getTokens: () => ipcRenderer.invoke('auth:getTokens'),
-  startOidcLogin: () => ipcRenderer.invoke('auth:startOidcLogin'),
-  refreshOidcToken: () => ipcRenderer.invoke('auth:refreshOidcToken'),
+  startLogin: () => ipcRenderer.invoke('auth:startLogin'),
   persistTokens: (accessToken: string, refreshToken: string) =>
     ipcRenderer.invoke('auth:persistTokens', accessToken, refreshToken),
   refreshConnectToken: (ekaHost: string) =>
@@ -404,6 +403,12 @@ contextBridge.exposeInMainWorld('desktopSettingsApi', {
     ipcRenderer.invoke('desktop:auto-launch:update', enabled),
 });
 
+/** Mirrors `PipState` in loginWindowManager — the wire format of `login-pip:state`. */
+type LoginPipState =
+  | { type: 'waiting' }
+  | { type: 'code'; userCode: string; verificationUrl: string; expiresAt: number }
+  | { type: 'error'; message: string };
+
 contextBridge.exposeInMainWorld('loginPipApi', {
   onEnter: (callback: () => void) => {
     const handler = () => callback();
@@ -415,11 +420,12 @@ contextBridge.exposeInMainWorld('loginPipApi', {
     ipcRenderer.on('login-pip:exit', handler);
     return () => ipcRenderer.removeListener('login-pip:exit', handler);
   },
-  onState: (callback: (state: { type: 'waiting' } | { type: 'error'; message: string }) => void) => {
-    const handler = (_event: IpcRendererEvent, state: { type: 'waiting' } | { type: 'error'; message: string }) =>
-      callback(state);
+  onState: (callback: (state: LoginPipState) => void) => {
+    const handler = (_event: IpcRendererEvent, state: LoginPipState) => callback(state);
     ipcRenderer.on('login-pip:state', handler);
     return () => ipcRenderer.removeListener('login-pip:state', handler);
   },
   cancelLogin: () => ipcRenderer.send('login-pip:cancel'),
+  shrinkToPip: () => ipcRenderer.send('login-pip:shrink'),
+  getState: (): Promise<LoginPipState | null> => ipcRenderer.invoke('login-pip:getState'),
 });

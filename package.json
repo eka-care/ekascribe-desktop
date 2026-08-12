@@ -1,6 +1,6 @@
 {
   "name": "ekascribe",
-  "productName": "EkaScribe",
+  "productName": "Vaarta",
   "version": "0.9.5",
   "description": "My Electron application description",
   "main": ".vite/build/main.js",
@@ -33,16 +33,16 @@
       }
     ],
     "mac": {
-      "artifactName": "EkaScribe.${ext}",
+      "artifactName": "Vaarta.${ext}",
       "icon": "build/icons/icon.icns",
       "hardenedRuntime": true,
       "notarize": true,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "Please allow microphone access to use the Eka Scribe feature.",
-        "NSScreenCaptureUsageDescription": "Please allow screen recording access to capture screen context and system audio for Eka Scribe Teleconsultation.",
-        "NSAudioCaptureUsageDescription": "Please allow system audio capture to include system sound in Eka Scribe recordings."
+        "NSMicrophoneUsageDescription": "Please allow microphone access to use Vaarta.",
+        "NSScreenCaptureUsageDescription": "Please allow screen recording access to capture screen context and system audio for Vaarta.",
+        "NSAudioCaptureUsageDescription": "Please allow system audio capture to include system sound in Vaarta recordings."
       },
       "extraResources": [
         {
@@ -68,7 +68,7 @@
           ]
         }
       ],
-      "artifactName": "EkaScribe Setup.${ext}",
+      "artifactName": "Vaarta Setup.${ext}",
       "target": [
         {
           "target": "nsis",
@@ -94,7 +94,7 @@
       "allowElevation": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "EkaScribe",
+      "shortcutName": "Vaarta",
       "installerIcon": "build/icons/icon.ico",
       "uninstallerIcon": "build/icons/icon.ico",
       "include": "scripts/windows/nsis-uninstall-helper.nsh"
@@ -145,6 +145,7 @@
     "@electron-forge/plugin-fuses": "^7.11.1",
     "@electron-forge/plugin-vite": "^7.11.1",
     "@electron/fuses": "^1.8.0",
+    "@lottiefiles/dotlottie-react": "^0.19.13",
     "@types/electron-squirrel-startup": "^1.0.2",
     "@types/express": "^5.0.6",
     "@types/react": "^19.2.14",
@@ -167,8 +168,6 @@
     "vite": "^5.4.21"
   },
   "dependencies": {
-    "@eneris/push-receiver": "^4.3.1",
-    "@sentry/electron": "^7.10.0",
     "@whiskeysockets/baileys": "^7.0.0-rc10",
     "electron-squirrel-startup": "^1.0.1",
     "electron-updater": "^6.8.3",
