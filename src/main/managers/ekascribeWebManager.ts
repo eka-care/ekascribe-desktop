@@ -275,6 +275,8 @@ function getEkascribeStaticCandidates(): string[] {
     path.join(appPath, 'external', 'ekascribe', 'apps', 'web', 'out'),
     path.join(resourcesPath, 'external', 'ekascribe', 'apps', 'web', 'out'),
     path.join(resourcesPath, 'ekascribe-web', 'out'),
+    // Forge copies extraResource by basename, landing the export directly in Resources.
+    path.join(resourcesPath, 'out'),
   ];
 }
 

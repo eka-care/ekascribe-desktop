@@ -1,8 +1,8 @@
 {
   "name": "ekascribe",
   "productName": "Vaarta",
-  "version": "0.9.5",
-  "description": "My Electron application description",
+  "version": "1.0.0",
+  "description": "Vaarta desktop app — speak freely, notes write themselves.",
   "main": ".vite/build/main.js",
   "private": true,
   "build": {
@@ -16,7 +16,7 @@
       "build/icons/tray/**",
       "package.json",
       "electron.env",
-      "external/ekascribe-runtime/**",
+      "external/ekascribe/apps/web/out/**",
       "!**/node_modules/.cache{,/**}",
       "!**/node_modules/@opentelemetry{,/**}"
     ],
@@ -28,8 +28,9 @@
     },
     "publish": [
       {
-        "provider": "generic",
-        "url": "https://updates.eka.care/ekascribe/latest/"
+        "provider": "github",
+        "owner": "eka-care",
+        "repo": "ekascribe-desktop"
       }
     ],
     "mac": {
@@ -111,7 +112,7 @@
     "build:ekascribe-web:static": "node -e \"const cp=require('child_process');const appSource=process.platform==='win32'?'electron-windows':'electron-mac';cp.execSync('npm run build --workspace apps/web',{stdio:'inherit',cwd:'external/ekascribe',env:{...process.env,EKASCRIBE_STATIC_EXPORT:'true',NEXT_PUBLIC_APP_SOURCE:appSource}});\"",
     "prepare:ekascribe-runtime": "node scripts/prepare-ekascribe-runtime.cjs",
     "prestart": "node -e \"if(process.platform==='darwin') require('child_process').execSync('npm run build:mac-helper', {stdio:'inherit'})\"",
-    "prepackage": "node -e \"const cp=require('child_process');if(process.platform==='win32')cp.execSync('npm run build:win-helper',{stdio:'inherit'});cp.execSync('node scripts/install-ekascribe-web.cjs',{stdio:'inherit'});cp.execSync('npm run build:ekascribe-web',{stdio:'inherit'});cp.execSync('npm run prepare:ekascribe-runtime',{stdio:'inherit'});\"",
+    "prepackage": "node -e \"const cp=require('child_process');if(process.platform==='win32')cp.execSync('npm run build:win-helper',{stdio:'inherit'});cp.execSync('node scripts/install-ekascribe-web.cjs',{stdio:'inherit'});cp.execSync('npm run build:ekascribe-web:static',{stdio:'inherit'});\"",
     "premake": "node -e \"const cp=require('child_process');if(process.platform==='win32') cp.execSync('npm run build:win-helper', {stdio:'inherit'});cp.execSync('npm run prepackage', {stdio:'inherit'});\"",
     "start": "electron-forge start",
     "package": "electron-forge package",
@@ -124,7 +125,9 @@
     "dist:mac:update": "electron-builder --mac zip",
     "publish:update": "node -e \"const cp=require('child_process');if(process.platform==='win32') cp.execSync('npm run build:win-helper:all', {stdio:'inherit'});cp.execSync('electron-builder --win nsis --x64 --arm64 --mac zip --publish always', {stdio:'inherit', env:process.env});\"",
     "lint:tslint": "tslint -p tsconfig.tslint.json -c tslint.json",
-    "dist:mac": "node -e \"const cp=require('child_process');const fs=require('fs');const path=require('path');const helperPath=path.resolve(process.cwd(),'mac/build/Release/EkaCareDesktopHelper.app');cp.execSync('npm run build:mac-helper:clean', {stdio:'inherit'});if(!fs.existsSync(helperPath)){throw new Error('Mac helper missing at '+helperPath);}cp.execSync('npm run package', {stdio:'inherit'});cp.execSync('electron-builder --mac dmg zip', {stdio:'inherit'});\""
+    "dist:mac": "node -e \"const cp=require('child_process');const fs=require('fs');const path=require('path');const helperPath=path.resolve(process.cwd(),'mac/build/Release/EkaCareDesktopHelper.app');cp.execSync('npm run build:mac-helper:clean', {stdio:'inherit'});if(!fs.existsSync(helperPath)){throw new Error('Mac helper missing at '+helperPath);}cp.execSync('npm run package', {stdio:'inherit'});cp.execSync('electron-builder --mac dmg zip', {stdio:'inherit'});\"",
+    "release:mac": "npm run package && electron-builder --mac dmg zip --publish always",
+    "release:mac:unsigned": "npm run package && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --config.mac.identity=null --config.mac.notarize=false --publish always"
   },
   "config": {
     "forge": "./forge.config.ts"

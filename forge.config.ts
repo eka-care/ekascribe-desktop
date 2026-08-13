@@ -17,7 +17,8 @@ if (!process.env.NEXT_PUBLIC_APP_SOURCE) {
 }
 
 const extraResources = [
-  'external/ekascribe-runtime',
+  // Static export; upstream next.config hardcodes output:'export', so there is no standalone build.
+  'external/ekascribe/apps/web/out',
   ...(process.platform === 'win32'
     ? ['windows/EkaDeskDocHelper/EkaDeskDocHelper/bin/Release/net10.0-windows']
     : []),
