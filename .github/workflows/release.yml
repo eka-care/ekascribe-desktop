@@ -16,11 +16,9 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      # external/ekascribe is a private repo, so the default token cannot read it.
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-          token: ${{ secrets.SUBMODULE_TOKEN || secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-node@v4
         with:
