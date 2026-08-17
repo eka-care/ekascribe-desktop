@@ -1000,12 +1000,8 @@ function buildAppMenu(): Menu {
         { role: 'togglefullscreen' as const },
         { type: 'separator' as const },
         { role: 'reload' as const },
-        ...(!app.isPackaged
-          ? [
-              { role: 'forceReload' as const },
-              { role: 'toggleDevTools' as const },
-            ]
-          : []),
+        { role: 'forceReload' as const },
+        { role: 'toggleDevTools' as const },
       ],
     },
     {

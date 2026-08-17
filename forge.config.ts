@@ -16,8 +16,10 @@ if (!process.env.NEXT_PUBLIC_APP_SOURCE) {
     process.platform === 'win32' ? 'electron-windows' : 'electron-mac';
 }
 
+// The embedded web app ships as the Next static export; electron-builder maps it to
+// resources/ekascribe-web/out, which is where ekascribeWebManager looks when packaged.
 const extraResources = [
-  'external/ekascribe-runtime',
+  'external/ekascribe/apps/web/out',
   ...(process.platform === 'win32'
     ? ['windows/EkaDeskDocHelper/EkaDeskDocHelper/bin/Release/net10.0-windows']
     : []),
