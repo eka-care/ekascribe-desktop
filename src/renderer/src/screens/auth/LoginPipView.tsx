@@ -1,6 +1,6 @@
 /// <reference path="../../../../vite-env.d.ts" />
 import React from 'react';
-import ekaLogo from './eka-logo.svg';
+import vaartaLogo from './vaarta-icon.svg';
 import DeviceCodePanel from './DeviceCodePanel';
 
 type PipState = LoginPipStatePayload;
@@ -103,7 +103,7 @@ export function LoginPipView() {
         >
           {/* Logo */}
           <img
-            src={ekaLogo}
+            src={vaartaLogo}
             alt="Vaarta"
             style={{ width: 72, height: 72, marginBottom: 28 }}
           />

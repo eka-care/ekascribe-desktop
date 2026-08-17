@@ -1,4 +1,3 @@
-/// <reference path="../../../../vite-env.d.ts" />
 import React from 'react';
 import { DotLottieReact } from '@lottiefiles/dotlottie-react';
 import { DotLottie } from '@lottiefiles/dotlottie-web';
@@ -80,7 +79,7 @@ export function AuthPage() {
         }}
       >
         {/* Animated vaarta lockup — same asset as the web app's sidebar */}
-        <div style={{ width: 213, height: 55, marginBottom: 44 }}>
+        <div style={{ width: 244, height: 55, marginBottom: 44 }}>
           <DotLottieReact src={vaartaLogoUrl} loop autoplay />
         </div>
 

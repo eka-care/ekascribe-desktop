@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer, type Server as HttpServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { app, ipcMain, net, protocol } from 'electron';
@@ -274,8 +274,39 @@ function getEkascribeStaticCandidates(): string[] {
   return [
     path.join(appPath, 'external', 'ekascribe', 'apps', 'web', 'out'),
     path.join(resourcesPath, 'external', 'ekascribe', 'apps', 'web', 'out'),
+    // electron-builder maps the export here; forge's extraResource keeps the bare dir name.
     path.join(resourcesPath, 'ekascribe-web', 'out'),
+    path.join(resourcesPath, 'out'),
   ];
+}
+
+function isFile(targetPath: string): boolean {
+  try {
+    return statSync(targetPath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Next's static export writes one file per prerendered route, and a dynamic segment is only
+ * prerendered for the params `generateStaticParams` returns — `/session/[id]` ships as
+ * `session/_.html` plus its `session/_.txt` RSC payload. A real `/session/<id>` request has
+ * to resolve to that placeholder: walking up to the nearest index.html instead serves the
+ * root shell, which hydrates the wrong route and leaves the session screen on its skeleton.
+ * The page reads the id back off the URL, so the shared shell is correct for every id.
+ */
+function resolveDynamicPlaceholder(root: string, resolvedPath: string): string | null {
+  const extension = path.extname(resolvedPath) || '.html';
+  let cursor = resolvedPath;
+  while (cursor.startsWith(root) && cursor !== root) {
+    const placeholder = path.join(path.dirname(cursor), `_${extension}`);
+    if (isFile(placeholder)) {
+      return placeholder;
+    }
+    cursor = path.dirname(cursor);
+  }
+  return null;
 }
 
 function getContentType(filePath: string): string {
@@ -286,6 +317,8 @@ function getContentType(filePath: string): string {
     case '.mjs': return 'application/javascript; charset=utf-8';
     case '.css': return 'text/css; charset=utf-8';
     case '.json': return 'application/json; charset=utf-8';
+    // Next's app router fetches `<route>.txt` for a prefetched route's RSC payload.
+    case '.txt': return 'text/plain; charset=utf-8';
     case '.svg': return 'image/svg+xml';
     case '.png': return 'image/png';
     case '.jpg':
@@ -318,13 +351,18 @@ async function startStaticServer(staticRoot: string): Promise<void> {
       }
 
       let targetPath = resolvedPath;
-      if (!existsSync(targetPath)) {
+      // A route can collide with a directory of its children (`template.html` beside
+      // `template/`), so only a real file counts as a hit — a directory would EISDIR below.
+      if (!isFile(targetPath)) {
         const htmlFallback = `${resolvedPath}.html`;
         const nestedIndexFallback = path.join(resolvedPath, 'index.html');
-        if (existsSync(htmlFallback)) {
+        const placeholderFallback = resolveDynamicPlaceholder(normalizedRoot, resolvedPath);
+        if (isFile(htmlFallback)) {
           targetPath = htmlFallback;
-        } else if (existsSync(nestedIndexFallback)) {
+        } else if (isFile(nestedIndexFallback)) {
           targetPath = nestedIndexFallback;
+        } else if (placeholderFallback) {
+          targetPath = placeholderFallback;
         } else {
           // Support legacy dynamic-like paths by walking up to nearest static index.
           let cursor = path.dirname(resolvedPath);

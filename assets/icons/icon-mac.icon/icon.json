@@ -19,10 +19,10 @@
           "blend-mode" : "darken",
           "fill" : "automatic",
           "hidden" : false,
-          "image-name" : "ekascribe-logomark 2.svg",
-          "name" : "ekascribe-logomark 2",
+          "image-name" : "vaarta-logomark.svg",
+          "name" : "vaarta-logomark",
           "position" : {
-            "scale" : 0.7,
+            "scale" : 0.62,
             "translation-in-points" : [
               -0.00030938684835746244,
               -0.000991890689988395
