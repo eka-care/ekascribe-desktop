@@ -163,6 +163,14 @@ export function registerAuthIpcHandlers(onAuthStateChanged?: () => void): void {
         const ekascribeWebUrl = getEkascribeAppOrigin();
         logLogin('ekascribe-web started', { url: ekascribeWebUrl });
         if (!event.sender.isDestroyed()) {
+          const win = BrowserWindow.fromWebContents(event.sender);
+          // Backgrounded and often minimized after the browser hand-off; Chromium composites no frame until it is fronted, so front it before loading.
+          if (win && !win.isDestroyed()) {
+            if (win.isMinimized()) win.restore();
+            win.show();
+            win.focus();
+            if (process.platform === 'darwin') app.focus({ steal: true });
+          }
           event.sender.once('did-finish-load', () => {
             if (!event.sender.isDestroyed()) {
               event.sender.send('scribe:setup', {
@@ -173,11 +181,7 @@ export function registerAuthIpcHandlers(onAuthStateChanged?: () => void): void {
           });
           logLogin('loading ekascribe-web url', { url: ekascribeWebUrl });
           await event.sender.loadURL(ekascribeWebUrl);
-          const win = BrowserWindow.fromWebContents(event.sender);
           if (win && !win.isDestroyed()) {
-            // Force macOS to repaint after PiP → fullsize + loadURL transition.
-            win.blur();
-            win.focus();
             setTimeout(() => {
               if (!win.isDestroyed()) {
                 showPermissionPromptIfNeeded(win);
