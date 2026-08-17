@@ -3,6 +3,9 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer, type Server as HttpServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { app, ipcMain, net, protocol } from 'electron';
+import { ELECTRON_API_ORIGIN, getApiUpstreamBase } from '../config';
+import { getAuthToken } from './authManager';
+import { refreshConnectAuthTokensDeduped } from './connectAuthRefresh';
 
 const EKASCRIBE_WEB_PORT = 3876;
 const EKASCRIBE_WEB_HOST = '127.0.0.1';
@@ -13,11 +16,11 @@ const EKASCRIBE_WEB_URL = `http://${EKASCRIBE_WEB_HOST}:${EKASCRIBE_WEB_PORT}`;
  * loopback server above still runs — but the renderer never addresses it directly.
  * `app://ekascribe/...` is bridged to it by {@link registerEkascribeAppProtocol}.
  *
- * The point is the *origin*. Backend calls go straight from the renderer to the upstream
- * API, so the browser stamps `Origin:` itself from the page's security origin — a value no
- * `webRequest` rewrite can change, because CORS validates the response against the real
- * origin rather than the header on the wire. Serving the page from `app://ekascribe` makes
- * that origin genuinely `app://ekascribe`, which is what the API allowlists.
+ * The point is the *origin*. ekascribe-web builds same-origin relative backend URLs, so
+ * API calls land on `app://ekascribe/...` too and this bridge forwards them to the
+ * upstream (see {@link isApiRequestPath}), stamping the `app://ekascribe` origin the API
+ * allowlists. Renderer code that fetches the upstream absolutely still gets that same
+ * origin for free from the page's security origin.
  */
 const EKASCRIBE_APP_SCHEME = 'app';
 const EKASCRIBE_APP_HOST = 'ekascribe';
@@ -99,8 +102,30 @@ function buildBridgeHeaders(source: Headers): Headers {
 }
 
 /**
- * Bridges `app://ekascribe/<path>` to the loopback Next server. Registered on the default
- * session after `ready`.
+ * Path prefixes owned by the backend API, not the web bundle. ekascribe-web builds
+ * same-origin relative URLs (`HOSTS.EKA_HOST === ''`); in production web the FastAPI
+ * server answers these itself while serving the static bundle for everything else. The
+ * bridge replicates that split — anything below misrouted to the Next server comes back
+ * as an HTML 404 page instead of an API response. Mirrors `rewrites()` in
+ * `apps/web/next.config.ts` and the router prefixes in `apps/api/src/scribe/main.py`.
+ */
+const API_PATH_PREFIXES = ['/voice/', '/connect-auth/'];
+const API_EXACT_PATHS = new Set(['/healthz']);
+
+// Must never trigger the 401 refresh-and-retry below — a rejected refresh answering 401
+// would otherwise recurse. Same guard as apiProxyManager.
+const API_REFRESH_PATH = '/connect-auth/v1/account/refresh-token';
+
+// Generous: audio-chunk uploads and long transcription polls cross this bridge.
+const API_UPSTREAM_TIMEOUT_MS = 120_000;
+
+function isApiRequestPath(pathname: string): boolean {
+  return API_EXACT_PATHS.has(pathname) || API_PATH_PREFIXES.some((p) => pathname.startsWith(p));
+}
+
+/**
+ * Bridges `app://ekascribe/<path>` to the loopback Next server, and API paths to the
+ * upstream API. Registered on the default session after `ready`.
  *
  * Redirects are followed inside `net.fetch`, so a Next-side redirect resolves here and the
  * renderer keeps the `app://` URL it asked for rather than being navigated to loopback —
@@ -111,6 +136,10 @@ export function registerEkascribeAppProtocol(): void {
     const url = new URL(request.url);
     if (url.hostname !== EKASCRIBE_APP_HOST) {
       return new Response('Not Found', { status: 404 });
+    }
+
+    if (isApiRequestPath(url.pathname)) {
+      return proxyApiRequest(request, url);
     }
 
     // A window can be created before the server finishes booting; this is idempotent.
@@ -137,7 +166,76 @@ export function registerEkascribeAppProtocol(): void {
     }
   });
 
-  console.log(`[ekascribe-web] ${EKASCRIBE_APP_ORIGIN} -> ${EKASCRIBE_WEB_URL}`);
+  console.log(`[ekascribe-web] ${EKASCRIBE_APP_ORIGIN} -> ${EKASCRIBE_WEB_URL} (web), -> ${getApiUpstreamBase()} (api)`);
+}
+
+/**
+ * Forwards a same-origin API request to the real upstream. This hop is main-process
+ * `net.fetch`, so nothing stamps `Origin:` for us and the renderer's webRequest auth hook
+ * (networkManager) doesn't apply — both the desktop origin and the bearer token are
+ * attached here explicitly. The renderer sees the response as same-origin, so no CORS
+ * headers are needed on the way back.
+ */
+async function proxyApiRequest(request: Request, url: URL): Promise<Response> {
+  const target = `${getApiUpstreamBase()}${url.pathname}${url.search}`;
+  const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
+
+  try {
+    // Buffered rather than streamed (`net.fetch` does not reliably accept a ReadableStream
+    // body) — buffering also makes the post-refresh replay below possible.
+    const body = hasBody ? await request.arrayBuffer() : undefined;
+
+    const headers = buildBridgeHeaders(request.headers);
+    headers.set('origin', ELECTRON_API_ORIGIN);
+    if (!headers.has('authorization')) {
+      const authToken = getAuthToken();
+      if (authToken) headers.set('authorization', `Bearer ${authToken}`);
+    }
+
+    let response = await fetchApiUpstream(request.method, target, headers, body);
+
+    // Expired access token: refresh once through the deduped refresher, then replay.
+    if (response.status === 401 && !url.pathname.startsWith(API_REFRESH_PATH)) {
+      console.warn('[ekascribe-web] api bridge 401 — attempting refresh and retry', url.pathname);
+      const { ok: refreshed } = await refreshConnectAuthTokensDeduped('', 'doc-web');
+      if (refreshed) {
+        const freshToken = getAuthToken();
+        if (freshToken) headers.set('authorization', `Bearer ${freshToken}`);
+        response = await fetchApiUpstream(request.method, target, headers, body);
+      }
+    }
+
+    console.log('[ekascribe-web] api bridge', request.method, url.pathname, '->', response.status);
+    return response;
+  } catch (error) {
+    console.error('[ekascribe-web] api bridge failed for', target, error);
+    return new Response(JSON.stringify({ error: 'upstream_unreachable', message: String(error) }), {
+      status: 502,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+}
+
+async function fetchApiUpstream(
+  method: string,
+  target: string,
+  headers: Headers,
+  body: ArrayBuffer | undefined,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), API_UPSTREAM_TIMEOUT_MS);
+  try {
+    return (await (net.fetch as Function)(target, {
+      method,
+      headers,
+      body,
+      signal: controller.signal,
+      // Skip the app-wide `https` interceptor (managers/proxyManager.ts) and this handler.
+      bypassCustomProtocolHandlers: true,
+    })) as Response;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 type NextAppLike = {

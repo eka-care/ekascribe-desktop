@@ -137,7 +137,7 @@
     "dist:mac:update": "electron-builder --mac zip",
     "publish:update": "node -e \"const cp=require('child_process');if(process.platform==='win32') cp.execSync('npm run build:win-helper:all', {stdio:'inherit'});cp.execSync('electron-builder --win nsis --x64 --arm64 --mac zip --publish always', {stdio:'inherit', env:process.env});\"",
     "lint:tslint": "tslint -p tsconfig.tslint.json -c tslint.json",
-    "dist:mac": "node -e \"const cp=require('child_process');const fs=require('fs');const path=require('path');const helperPath=path.resolve(process.cwd(),'mac/build/Release/EkaCareDesktopHelper.app');cp.execSync('npm run build:mac-helper:clean', {stdio:'inherit'});if(!fs.existsSync(helperPath)){throw new Error('Mac helper missing at '+helperPath);}cp.execSync('npm run package', {stdio:'inherit'});cp.execSync('electron-builder --mac dmg zip', {stdio:'inherit'});\""
+    "dist:mac": "node scripts/dist-mac.cjs"
   },
   "config": {
     "forge": "./forge.config.ts"
