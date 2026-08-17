@@ -1,8 +1,8 @@
 {
   "name": "ekascribe",
   "productName": "Vaarta",
-  "version": "0.9.5",
-  "description": "My Electron application description",
+  "version": "1.0.0",
+  "description": "Vaarta — an ambient AI medical scribe for the desktop, by Eka Care.",
   "main": ".vite/build/main.js",
   "private": true,
   "build": {

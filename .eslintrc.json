@@ -13,6 +13,22 @@
     "plugin:import/typescript"
   ],
   "parser": "@typescript-eslint/parser",
+  "rules": {
+    "import/no-unresolved": [
+      "error",
+      {
+        "ignore": ["\\?(url|raw|inline|worker)$"]
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": ["**/*.cjs"],
+      "rules": {
+        "@typescript-eslint/no-var-requires": "off"
+      }
+    }
+  ],
   "ignorePatterns": [
     "dist/",
     "out/",
