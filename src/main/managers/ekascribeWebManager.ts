@@ -1,37 +1,36 @@
 import path from 'node:path';
 import { existsSync, readFileSync, statSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { createServer, type Server as HttpServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { app, ipcMain, net, protocol } from 'electron';
+import { ELECTRON_API_ORIGIN, getApiUpstreamBase } from '../config';
+import { getAuthToken } from './authManager';
+import { refreshConnectAuthTokensDeduped } from './connectAuthRefresh';
 
+/**
+ * Dev-only loopback address of the Next dev server. Next needs a real HTTP server for
+ * HMR/dev middleware, so in dev the `app://` protocol handler bridges to it. Packaged
+ * builds have NO listening socket at all — the static export is read straight from disk
+ * inside the protocol handler, so nothing on the machine can address the app's files
+ * over HTTP.
+ */
 const EKASCRIBE_WEB_PORT = 3876;
 const EKASCRIBE_WEB_HOST = '127.0.0.1';
 const EKASCRIBE_WEB_URL = `http://${EKASCRIBE_WEB_HOST}:${EKASCRIBE_WEB_PORT}`;
 
 /**
- * Custom scheme the window actually loads from. Next needs a real HTTP server, so the
- * loopback server above still runs — but the renderer never addresses it directly.
- * `app://ekascribe/...` is bridged to it by {@link registerEkascribeAppProtocol}.
+ * Custom scheme the window loads from.
  *
- * The point is the *origin*. Backend calls go straight from the renderer to the upstream
- * API, so the browser stamps `Origin:` itself from the page's security origin — a value no
- * `webRequest` rewrite can change, because CORS validates the response against the real
- * origin rather than the header on the wire. Serving the page from `app://ekascribe` makes
- * that origin genuinely `app://ekascribe`, which is what the API allowlists.
+ * The point is the *origin*. ekascribe-web builds same-origin relative backend URLs, so
+ * API calls land on `app://ekascribe/...` too and the protocol handler forwards them to the
+ * upstream (see {@link isApiRequestPath}), stamping the `app://ekascribe` origin the API
+ * allowlists. Renderer code that fetches the upstream absolutely still gets that same
+ * origin for free from the page's security origin.
  */
 const EKASCRIBE_APP_SCHEME = 'app';
 const EKASCRIBE_APP_HOST = 'ekascribe';
 const EKASCRIBE_APP_ORIGIN = `${EKASCRIBE_APP_SCHEME}://${EKASCRIBE_APP_HOST}`;
-
-/**
- * Origin the embedded web app is served from. ekascribe-web builds same-origin *relative*
- * API URLs (`HOSTS.EKA_HOST === ''`); in a browser those resolve against the page origin,
- * but requests routed over IPC reach the main process with no origin attached, so callers
- * must resolve them against this base before handing them to `net.fetch`.
- */
-export function getEkascribeWebOrigin(): string {
-  return EKASCRIBE_WEB_URL;
-}
 
 /** Origin the window loads from, and the `Origin:` the API sees on renderer calls. */
 export function getEkascribeAppOrigin(): string {
@@ -65,7 +64,7 @@ export function registerEkascribeAppSchemePrivileges(): void {
 }
 
 /**
- * Dropped from requests the bridge forwards to the Next server. They describe the
+ * Dropped from requests the dev bridge forwards to the Next dev server. They describe the
  * renderer→bridge hop, not the loopback one — and `origin` is load-bearing: forwarding it
  * makes `net.fetch` treat the loopback hop as a CORS request and send a preflight, which
  * Next answers 400, failing the whole fetch with ERR_FAILED. Fonts are the only subresource
@@ -99,21 +98,55 @@ function buildBridgeHeaders(source: Headers): Headers {
 }
 
 /**
- * Bridges `app://ekascribe/<path>` to the loopback Next server. Registered on the default
- * session after `ready`.
+ * Path prefixes owned by the backend API, not the web bundle. ekascribe-web builds
+ * same-origin relative URLs (`HOSTS.EKA_HOST === ''`); in production web the FastAPI
+ * server answers these itself while serving the static bundle for everything else. The
+ * protocol handler replicates that split — anything below misrouted to the static bundle
+ * comes back as an HTML 404 page instead of an API response. Mirrors `rewrites()` in
+ * `apps/web/next.config.ts` and the router prefixes in `apps/api/src/scribe/main.py`.
+ */
+const API_PATH_PREFIXES = ['/voice/', '/connect-auth/'];
+const API_EXACT_PATHS = new Set(['/healthz']);
+
+// Must never trigger the 401 refresh-and-retry below — a rejected refresh answering 401
+// would otherwise recurse.
+const API_REFRESH_PATH = '/connect-auth/v1/account/refresh-token';
+
+// Generous: audio-chunk uploads and long transcription polls cross this bridge.
+const API_UPSTREAM_TIMEOUT_MS = 120_000;
+
+function isApiRequestPath(pathname: string): boolean {
+  return API_EXACT_PATHS.has(pathname) || API_PATH_PREFIXES.some((p) => pathname.startsWith(p));
+}
+
+/**
+ * Serves `app://ekascribe/<path>`: API paths go to the upstream API; everything else is
+ * the web bundle — read from disk in packaged builds, bridged to the Next dev server in
+ * dev. Registered on the default session after `ready`.
  *
- * Redirects are followed inside `net.fetch`, so a Next-side redirect resolves here and the
- * renderer keeps the `app://` URL it asked for rather than being navigated to loopback —
- * which would silently drop the page back to the wrong origin.
+ * In dev, redirects are followed inside `net.fetch`, so a Next-side redirect resolves here
+ * and the renderer keeps the `app://` URL it asked for rather than being navigated to
+ * loopback — which would silently drop the page back to the wrong origin.
  */
 export function registerEkascribeAppProtocol(): void {
+  // EKA_API_UPSTREAM lives in electron.env; load it before the first API request needs it.
+  injectElectronEnv();
+
   protocol.handle(EKASCRIBE_APP_SCHEME, async (request) => {
     const url = new URL(request.url);
     if (url.hostname !== EKASCRIBE_APP_HOST) {
       return new Response('Not Found', { status: 404 });
     }
 
-    // A window can be created before the server finishes booting; this is idempotent.
+    if (isApiRequestPath(url.pathname)) {
+      return proxyApiRequest(request, url);
+    }
+
+    if (app.isPackaged) {
+      return serveStaticFile(url.pathname);
+    }
+
+    // Dev: a window can be created before the Next server finishes booting; idempotent.
     await startEkascribeWeb();
 
     const target = `${EKASCRIBE_WEB_URL}${url.pathname}${url.search}`;
@@ -132,12 +165,83 @@ export function registerEkascribeAppProtocol(): void {
         bypassCustomProtocolHandlers: true,
       })) as Response;
     } catch (error) {
-      console.error('[ekascribe-web] app:// bridge failed for', target, error);
+      console.error('[ekascribe-web] app:// dev bridge failed for', target, error);
       return new Response('Bad Gateway', { status: 502 });
     }
   });
 
-  console.log(`[ekascribe-web] ${EKASCRIBE_APP_ORIGIN} -> ${EKASCRIBE_WEB_URL}`);
+  console.log(
+    `[ekascribe-web] ${EKASCRIBE_APP_ORIGIN} -> ${app.isPackaged ? 'static bundle (in-process)' : EKASCRIBE_WEB_URL} (web), -> ${getApiUpstreamBase()} (api)`,
+  );
+}
+
+/**
+ * Forwards a same-origin API request to the real upstream. This hop is main-process
+ * `net.fetch`, so nothing stamps `Origin:` for us and the renderer's webRequest auth hook
+ * (networkManager) doesn't apply — both the desktop origin and the bearer token are
+ * attached here explicitly. The renderer sees the response as same-origin, so no CORS
+ * headers are needed on the way back.
+ */
+async function proxyApiRequest(request: Request, url: URL): Promise<Response> {
+  const target = `${getApiUpstreamBase()}${url.pathname}${url.search}`;
+  const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
+
+  try {
+    // Buffered rather than streamed (`net.fetch` does not reliably accept a ReadableStream
+    // body) — buffering also makes the post-refresh replay below possible.
+    const body = hasBody ? await request.arrayBuffer() : undefined;
+
+    const headers = buildBridgeHeaders(request.headers);
+    headers.set('origin', ELECTRON_API_ORIGIN);
+    if (!headers.has('authorization')) {
+      const authToken = getAuthToken();
+      if (authToken) headers.set('authorization', `Bearer ${authToken}`);
+    }
+
+    let response = await fetchApiUpstream(request.method, target, headers, body);
+
+    // Expired access token: refresh once through the deduped refresher, then replay.
+    if (response.status === 401 && !url.pathname.startsWith(API_REFRESH_PATH)) {
+      console.warn('[ekascribe-web] api bridge 401 — attempting refresh and retry', url.pathname);
+      const { ok: refreshed } = await refreshConnectAuthTokensDeduped('', 'doc-web');
+      if (refreshed) {
+        const freshToken = getAuthToken();
+        if (freshToken) headers.set('authorization', `Bearer ${freshToken}`);
+        response = await fetchApiUpstream(request.method, target, headers, body);
+      }
+    }
+
+    console.log('[ekascribe-web] api bridge', request.method, url.pathname, '->', response.status);
+    return response;
+  } catch (error) {
+    console.error('[ekascribe-web] api bridge failed for', target, error);
+    return new Response(JSON.stringify({ error: 'upstream_unreachable', message: String(error) }), {
+      status: 502,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+}
+
+async function fetchApiUpstream(
+  method: string,
+  target: string,
+  headers: Headers,
+  body: ArrayBuffer | undefined,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), API_UPSTREAM_TIMEOUT_MS);
+  try {
+    return (await (net.fetch as Function)(target, {
+      method,
+      headers,
+      body,
+      signal: controller.signal,
+      // Skip the app-wide `https` interceptor (managers/proxyManager.ts) and this handler.
+      bypassCustomProtocolHandlers: true,
+    })) as Response;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 type NextAppLike = {
@@ -149,16 +253,36 @@ type NextAppLike = {
 let ekascribeServer: HttpServer | null = null;
 let ekascribeNextApp: NextAppLike | null = null;
 let startPromise: Promise<string> | null = null;
+let staticRootCache: string | null = null;
 
 export function registerEkascribeWebIpcHandlers(): void {
   ipcMain.handle('ekascribe-web:start', startEkascribeWeb);
   ipcMain.handle('ekascribe-web:stop', stopEkascribeWeb);
-  ipcMain.handle('ekascribe-web:url', () => EKASCRIBE_WEB_URL);
+  ipcMain.handle('ekascribe-web:url', () => EKASCRIBE_APP_ORIGIN);
 }
 
+/**
+ * Packaged: resolves (and caches) the static export root — no server, no port. Throws
+ * loudly if the export is missing from the bundle; there is deliberately no fallback to
+ * running Next in production, which cannot work (the packaged app ships no Next runtime
+ * or node_modules) and would only produce a misleading error later.
+ *
+ * Dev: boots the in-process Next dev server the `app://` bridge forwards to.
+ */
 export async function startEkascribeWeb(): Promise<string> {
+  process.env.NEXT_PUBLIC_APP_SOURCE =
+    process.platform === 'win32' ? 'electron-windows' : 'electron-mac';
+
+  if (app.isPackaged) {
+    if (!staticRootCache) {
+      staticRootCache = resolveEkascribeStaticRoot();
+      console.log('[ekascribe-web] serving static bundle from', staticRootCache);
+    }
+    return EKASCRIBE_APP_ORIGIN;
+  }
+
   if (ekascribeServer?.listening) {
-    return EKASCRIBE_WEB_URL;
+    return EKASCRIBE_APP_ORIGIN;
   }
 
   if (startPromise) {
@@ -166,24 +290,10 @@ export async function startEkascribeWeb(): Promise<string> {
   }
 
   startPromise = (async () => {
-    process.env.NEXT_PUBLIC_APP_SOURCE =
-      process.platform === 'win32' ? 'electron-windows' : 'electron-mac';
-
-    if (app.isPackaged) {
-      const staticRoot = tryResolveEkascribeStaticRoot();
-      if (staticRoot) {
-        await startStaticServer(staticRoot);
-      } else {
-        const repoPath = resolveEkascribeRepoPath();
-        await ensureDependenciesInstalled(repoPath);
-        await startNextServer(repoPath);
-      }
-    } else {
-      const repoPath = resolveEkascribeRepoPath();
-      await ensureDependenciesInstalled(repoPath);
-      await startNextServer(repoPath);
-    }
-    return EKASCRIBE_WEB_URL;
+    const repoPath = resolveEkascribeRepoPath();
+    await ensureDependenciesInstalled(repoPath);
+    await startNextServer(repoPath);
+    return EKASCRIBE_APP_ORIGIN;
   })();
 
   try {
@@ -211,8 +321,8 @@ export async function stopEkascribeWeb(): Promise<void> {
 }
 
 async function ensureDependenciesInstalled(repoPath: string): Promise<void> {
-  // npm workspaces hoist node_modules to the monorepo root, and the Next standalone
-  // bundle does the same, so the tree may live several levels above the app dir.
+  // npm workspaces hoist node_modules to the monorepo root, so the tree may live several
+  // levels above the app dir.
   if (findHoistedNodeModules(repoPath)) {
     return;
   }
@@ -222,13 +332,13 @@ async function ensureDependenciesInstalled(repoPath: string): Promise<void> {
     .join('\n');
 
   throw new Error(
-    `Missing dependencies for ${repoPath} (no node_modules in it or any parent).\nSearched ekascribe-web locations:\n${triedPaths}\nRun "npm install" inside external/ekascribe before packaging, then rebuild the desktop app.`
+    `Missing dependencies for ${repoPath} (no node_modules in it or any parent).\nSearched ekascribe-web locations:\n${triedPaths}\nRun "npm install" inside external/ekascribe.`
   );
 }
 
 function findHoistedNodeModules(startPath: string): string | null {
   let current = startPath;
-  for (;;) {
+  for (; ;) {
     const candidate = path.join(current, 'node_modules');
     if (existsSync(candidate)) return candidate;
     const parent = path.dirname(current);
@@ -243,7 +353,7 @@ function resolveEkascribeStaticRoot(): string {
     existsSync(path.join(candidatePath, 'index.html'))
   );
   if (existing) {
-    return existing;
+    return path.resolve(existing);
   }
 
   const triedPaths = candidates.map((candidatePath) => `- ${candidatePath}`).join('\n');
@@ -252,24 +362,9 @@ function resolveEkascribeStaticRoot(): string {
   );
 }
 
-function tryResolveEkascribeStaticRoot(): string | null {
-  try {
-    return resolveEkascribeStaticRoot();
-  } catch {
-    return null;
-  }
-}
-
 function getEkascribeStaticCandidates(): string[] {
   const appPath = appRootPath();
   const resourcesPath = process.resourcesPath;
-
-  if (!app.isPackaged) {
-    return [
-      path.join(appPath, 'external', 'ekascribe', 'apps', 'web', 'out'),
-      path.join(appPath, '..', 'external', 'ekascribe', 'apps', 'web', 'out'),
-    ];
-  }
 
   return [
     path.join(appPath, 'external', 'ekascribe', 'apps', 'web', 'out'),
@@ -333,72 +428,66 @@ function getContentType(filePath: string): string {
   }
 }
 
-async function startStaticServer(staticRoot: string): Promise<void> {
-  const server = createServer((req, res) => {
-    try {
-      const rawUrl = req.url ?? '/';
-      const urlPath = rawUrl.split('?')[0] || '/';
-      const decodedPath = decodeURIComponent(urlPath);
-      const safeRelative = decodedPath.replace(/^\/+/, '');
-      const requestedPath = safeRelative === '' ? 'index.html' : safeRelative;
-      const resolvedPath = path.resolve(staticRoot, requestedPath);
-      const normalizedRoot = path.resolve(staticRoot);
+/**
+ * Packaged builds: answers `app://ekascribe/<path>` straight from the static export on
+ * disk, inside the protocol handler. Replaces the old loopback static server — same
+ * fallback ladder, minus the fixed port, the open localhost listener any local process
+ * could read the bundle through, and the buffered extra HTTP hop per asset.
+ */
+async function serveStaticFile(pathname: string): Promise<Response> {
+  try {
+    const normalizedRoot = staticRootCache ?? (staticRootCache = resolveEkascribeStaticRoot());
 
-      if (!resolvedPath.startsWith(normalizedRoot)) {
-        res.statusCode = 403;
-        res.end('Forbidden');
-        return;
-      }
+    const decodedPath = decodeURIComponent(pathname);
+    const safeRelative = decodedPath.replace(/^\/+/, '');
+    const requestedPath = safeRelative === '' ? 'index.html' : safeRelative;
+    const resolvedPath = path.resolve(normalizedRoot, requestedPath);
 
-      let targetPath = resolvedPath;
-      // A route can collide with a directory of its children (`template.html` beside
-      // `template/`), so only a real file counts as a hit — a directory would EISDIR below.
-      if (!isFile(targetPath)) {
-        const htmlFallback = `${resolvedPath}.html`;
-        const nestedIndexFallback = path.join(resolvedPath, 'index.html');
-        const placeholderFallback = resolveDynamicPlaceholder(normalizedRoot, resolvedPath);
-        if (isFile(htmlFallback)) {
-          targetPath = htmlFallback;
-        } else if (isFile(nestedIndexFallback)) {
-          targetPath = nestedIndexFallback;
-        } else if (placeholderFallback) {
-          targetPath = placeholderFallback;
-        } else {
-          // Support legacy dynamic-like paths by walking up to nearest static index.
-          let cursor = path.dirname(resolvedPath);
-          let matched = '';
-          while (cursor.startsWith(normalizedRoot)) {
-            const candidate = path.join(cursor, 'index.html');
-            if (existsSync(candidate)) {
-              matched = candidate;
-              break;
-            }
-            if (cursor === normalizedRoot) {
-              break;
-            }
-            cursor = path.dirname(cursor);
-          }
-          targetPath = matched || path.join(normalizedRoot, 'index.html');
-        }
-      }
-
-      const body = readFileSync(targetPath);
-      res.statusCode = 200;
-      res.setHeader('Content-Type', getContentType(targetPath));
-      res.end(body);
-    } catch (error) {
-      console.error('[ekascribe-web] static request handling failed', error);
-      res.statusCode = 500;
-      res.end('Internal Server Error');
+    if (resolvedPath !== normalizedRoot && !resolvedPath.startsWith(normalizedRoot + path.sep)) {
+      return new Response('Forbidden', { status: 403 });
     }
-  });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(EKASCRIBE_WEB_PORT, EKASCRIBE_WEB_HOST, () => resolve());
-  });
+    let targetPath = resolvedPath;
+    // A route can collide with a directory of its children (`template.html` beside
+    // `template/`), so only a real file counts as a hit — a directory would EISDIR below.
+    if (!isFile(targetPath)) {
+      const htmlFallback = `${resolvedPath}.html`;
+      const nestedIndexFallback = path.join(resolvedPath, 'index.html');
+      const placeholderFallback = resolveDynamicPlaceholder(normalizedRoot, resolvedPath);
+      if (isFile(htmlFallback)) {
+        targetPath = htmlFallback;
+      } else if (isFile(nestedIndexFallback)) {
+        targetPath = nestedIndexFallback;
+      } else if (placeholderFallback) {
+        targetPath = placeholderFallback;
+      } else {
+        // Support legacy dynamic-like paths by walking up to nearest static index.
+        let cursor = path.dirname(resolvedPath);
+        let matched = '';
+        while (cursor.startsWith(normalizedRoot)) {
+          const candidate = path.join(cursor, 'index.html');
+          if (existsSync(candidate)) {
+            matched = candidate;
+            break;
+          }
+          if (cursor === normalizedRoot) {
+            break;
+          }
+          cursor = path.dirname(cursor);
+        }
+        targetPath = matched || path.join(normalizedRoot, 'index.html');
+      }
+    }
 
-  ekascribeServer = server;
+    const body = await readFile(targetPath);
+    return new Response(body, {
+      status: 200,
+      headers: { 'content-type': getContentType(targetPath) },
+    });
+  } catch (error) {
+    console.error('[ekascribe-web] static request handling failed', pathname, error);
+    return new Response('Internal Server Error', { status: 500 });
+  }
 }
 
 async function startNextServer(repoPath: string): Promise<void> {
@@ -413,8 +502,7 @@ async function startNextServer(repoPath: string): Promise<void> {
   }) => NextAppLike;
 
   const nextApp = nextModule({
-    // Packaged desktop app must run Next in production mode.
-    dev: app.isPackaged ? false : process.env.NODE_ENV !== 'production',
+    dev: process.env.NODE_ENV !== 'production',
     dir: repoPath,
     hostname: EKASCRIBE_WEB_HOST,
     port: EKASCRIBE_WEB_PORT,
@@ -469,6 +557,7 @@ export function injectElectronEnv(): void {
   }
 }
 
+/** Dev only — the packaged app serves the static export and never runs Next. */
 function resolveEkascribeRepoPath(): string {
   const candidates = getEkascribeRepoCandidates();
   const existing = candidates.find((candidatePath) =>
@@ -484,48 +573,10 @@ function resolveEkascribeRepoPath(): string {
 
 function getEkascribeRepoCandidates(): string[] {
   const appPath = appRootPath();
-  const resourcesPath = process.resourcesPath;
-  if (!app.isPackaged) {
-    return [
-      // Dev mode: always prefer the web workspace inside the monorepo submodule.
-      path.join(appPath, 'external', 'ekascribe', 'apps', 'web'),
-      // If appPath differs from workspace root, allow one-level-up fallback.
-      path.join(appPath, '..', 'external', 'ekascribe', 'apps', 'web'),
-      // Last resort in dev when prepackage already prepared runtime.
-      ...runtimeAppDirs(path.join(appPath, 'external', 'ekascribe-runtime')),
-    ];
-  }
   return [
-    // Builder runtime bundle inside app.asar.
-    ...runtimeAppDirs(path.join(appPath, 'external', 'ekascribe-runtime')),
-    // Forge extraResource: ['external/ekascribe-runtime'] -> resources/ekascribe-runtime
-    ...runtimeAppDirs(path.join(resourcesPath, 'ekascribe-runtime')),
-    // Builder runtime bundle copied to resources (fallback).
-    ...runtimeAppDirs(path.join(resourcesPath, 'external', 'ekascribe-runtime')),
-    // Unpacked submodule checkout, if a build ever ships one.
+    // Dev mode: always prefer the web workspace inside the monorepo submodule.
     path.join(appPath, 'external', 'ekascribe', 'apps', 'web'),
-    path.join(resourcesPath, 'external', 'ekascribe', 'apps', 'web'),
+    // If appPath differs from workspace root, allow one-level-up fallback.
+    path.join(appPath, '..', 'external', 'ekascribe', 'apps', 'web'),
   ];
 }
-
-/**
- * The Next standalone bundle mirrors the monorepo tree (`outputFileTracingRoot` is pinned
- * to the repo root), so `server.js` sits under `apps/web` rather than at the bundle root.
- * `scripts/prepare-ekascribe-runtime.cjs` records the real location in runtime-manifest.json;
- * fall back to the bundle root for a flat bundle.
- */
-function runtimeAppDirs(runtimeRoot: string): string[] {
-  const dirs: string[] = [];
-  try {
-    const manifestPath = path.join(runtimeRoot, 'runtime-manifest.json');
-    if (existsSync(manifestPath)) {
-      const { appDir } = JSON.parse(readFileSync(manifestPath, 'utf-8')) as { appDir?: string };
-      if (appDir) dirs.push(path.join(runtimeRoot, ...appDir.split('/')));
-    }
-  } catch (error) {
-    console.error('[ekascribe-web] failed reading runtime manifest', error);
-  }
-  dirs.push(runtimeRoot);
-  return dirs;
-}
-

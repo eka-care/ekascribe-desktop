@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { BrowserWindow, ipcMain, Notification, shell } from 'electron';
 import ElectronStore from 'electron-store';
 
@@ -122,15 +123,14 @@ function getPermissionPromptHtml(): string {
       </div>
     </div>
     <script>
-      const { ipcRenderer } = require('electron');
       document.getElementById('allow').addEventListener('click', () => {
-        ipcRenderer.send('notification-prompt:action', 'allow');
+        window.popupApi.sendNotificationPromptAction('allow');
       });
       document.getElementById('deny').addEventListener('click', () => {
-        ipcRenderer.send('notification-prompt:action', 'deny');
+        window.popupApi.sendNotificationPromptAction('deny');
       });
       document.getElementById('neverAsk').addEventListener('click', () => {
-        ipcRenderer.send('notification-prompt:action', 'neverAsk');
+        window.popupApi.sendNotificationPromptAction('neverAsk');
       });
     </script>
   </body>
@@ -200,8 +200,10 @@ export async function showPermissionPromptIfNeeded(win: BrowserWindow): Promise<
     alwaysOnTop: true,
     show: false,
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
+      preload: path.join(__dirname, 'popupPreload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
     },
   });
 

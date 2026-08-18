@@ -134,16 +134,15 @@ function getUpdatePopupHtml(): string {
       </div>
     </div>
     <script>
-      const { ipcRenderer } = require('electron');
       const updateBtn = document.getElementById('update');
       document.getElementById('later').addEventListener('click', () => {
-        ipcRenderer.send('updater:popup-action', 'later');
+        window.popupApi.sendUpdaterAction('later');
         window.close();
       });
       updateBtn.addEventListener('click', () => {
         updateBtn.disabled = true;
         updateBtn.textContent = 'Updating...';
-        ipcRenderer.send('updater:popup-action', 'update');
+        window.popupApi.sendUpdaterAction('update');
       });
     </script>
   </body>
@@ -217,8 +216,10 @@ function showUpdatePopup(): void {
     show: false,
     transparent: false,
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
+      preload: path.join(__dirname, 'popupPreload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
     },
   });
   updatePopupWindow.setMenuBarVisibility(false);

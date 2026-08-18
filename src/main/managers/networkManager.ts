@@ -1,6 +1,5 @@
 import { ipcMain, net, session } from 'electron';
 import { getAuthToken } from './authManager';
-import { getApiProxyOrigin } from './apiProxyManager';
 import { ELECTRON_API_ORIGIN, getApiUpstreamBase } from '../config';
 
 export interface NetworkRequestPayload {
@@ -37,13 +36,14 @@ const NETWORK_ERROR_RESPONSE: NetworkResponsePayload = {
 /**
  * Renderer callers may pass a relative URL ('/connect-auth/...'). The renderer would resolve
  * it against its page origin, but by the time it arrives here over IPC there is no origin
- * left and `net.fetch` rejects with "Failed to parse URL". Resolve against the Express API
- * proxy, which is where the embedded web app's absolute URLs already point.
+ * left and `net.fetch` rejects with "Failed to parse URL". Resolve against the upstream API,
+ * which is where a same-origin relative path would have landed anyway (the `app://` protocol
+ * handler forwards API paths there).
  */
 function toAbsoluteUrl(url: string): string {
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) return url;
   try {
-    return new URL(url, getApiProxyOrigin()).toString();
+    return new URL(url, getApiUpstreamBase()).toString();
   } catch {
     return url;
   }
@@ -139,10 +139,9 @@ async function handleNetworkRequest(
 ): Promise<NetworkResponsePayload> {
   const { method, headers, body, retry } = payload;
   const url = toAbsoluteUrl(payload.url);
-  const viaProxy = isProxyTarget(url);
 
-  // Direct-to-upstream (proxy disabled) — stamp the desktop Origin. When the Express
-  // proxy is in the path it sets Origin itself on the upstream hop.
+  // Direct-to-upstream — stamp the desktop Origin the API allowlists; this hop has no
+  // browser origin of its own.
   if (isUpstreamApiTarget(url)) {
     headers.origin = ELECTRON_API_ORIGIN;
     delete headers.Origin;
@@ -160,10 +159,10 @@ async function handleNetworkRequest(
     }
   }
 
-  // Backend calls go through the Express proxy, which owns credential injection and the
-  // 401 refresh-and-retry. Requests to third-party hosts (presigned upload URLs and the
-  // like) are forwarded untouched — attaching the session token to them would leak it.
-  if (viaProxy && !headers['client-id']) {
+  // Only backend calls get the client id. Requests to third-party hosts (presigned upload
+  // URLs and the like) are forwarded untouched — attaching session identifiers to them
+  // would leak them.
+  if (isVaartaUpstream(url) && !headers['client-id']) {
     headers['client-id'] = DEFAULT_CLIENT_ID;
   }
 
@@ -203,15 +202,6 @@ async function handleNetworkRequest(
   });
 
   return serialized;
-}
-
-/** True when the request is bound for the main-process Express proxy. */
-function isProxyTarget(url: string): boolean {
-  try {
-    return new URL(url).origin === getApiProxyOrigin();
-  } catch {
-    return false;
-  }
 }
 
 export function registerNetworkIpcHandlers(): void {

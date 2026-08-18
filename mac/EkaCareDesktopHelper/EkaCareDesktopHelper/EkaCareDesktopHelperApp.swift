@@ -26,7 +26,19 @@ private let ownerPidFile = "/tmp/deskdoc-pill-owner.pid"
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-  private static let ekaScribeAppPath = "/Applications/EkaScribe.app"
+  /// The Electron host app bundle that contains this helper, derived from the
+  /// helper's own location (…/<Host>.app/Contents/Resources/native/mac/
+  /// EkaCareDesktopHelper.app) so it survives product renames. `nil` in dev
+  /// builds, where the helper runs from mac/build/Release with no enclosing
+  /// host bundle.
+  private static let electronHostAppPath: String? = {
+    var url = URL(fileURLWithPath: Bundle.main.bundlePath).deletingLastPathComponent()
+    while url.path != "/" {
+      if url.pathExtension == "app" { return url.path }
+      url.deleteLastPathComponent()
+    }
+    return nil
+  }()
 
   private let appState = BridgeAppState()
   private let overlayStateStore = OverlayStateStore()
@@ -182,7 +194,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   private func validateEkaScribeHostAppBeforePrompt() -> Bool {
     guard !hasInitiatedMissingHostCleanup else { return false }
-    let appExists = FileManager.default.fileExists(atPath: Self.ekaScribeAppPath)
+    guard let hostAppPath = Self.electronHostAppPath else {
+      return true
+    }
+    let appExists = FileManager.default.fileExists(atPath: hostAppPath)
     guard appExists else {
       handleMissingEkaScribeApp()
       return false
@@ -193,7 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func handleMissingEkaScribeApp() {
     guard !hasInitiatedMissingHostCleanup else { return }
     hasInitiatedMissingHostCleanup = true
-    print("[MacHelper] EkaScribe app missing at \(Self.ekaScribeAppPath); removing login item and terminating helper")
+    print("[MacHelper] host app missing at \(Self.electronHostAppPath ?? "<unknown>"); removing login item and terminating helper")
     removeFromLoginItemsIfRegistered()
     overlayController?.hide()
     NSApp.terminate(nil)
