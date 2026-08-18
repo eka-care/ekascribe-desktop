@@ -1,12 +1,12 @@
 {
-  "name": "ekascribe",
+  "name": "vaarta",
   "productName": "Vaarta",
   "version": "1.0.0",
   "description": "Vaarta — an ambient AI medical scribe for the desktop, by Eka Care.",
   "main": ".vite/build/main.js",
   "private": true,
   "build": {
-    "appId": "care.eka.ekascribe",
+    "appId": "care.eka.vaarta",
     "compression": "maximum",
     "electronLanguages": [
       "en"
@@ -28,7 +28,7 @@
     "publish": [
       {
         "provider": "generic",
-        "url": "https://updates.eka.care/ekascribe/latest/"
+        "url": "https://vaarta.bharatai.gov.in/downloads/latest/"
       }
     ],
     "mac": {
