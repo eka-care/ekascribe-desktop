@@ -49,11 +49,6 @@ import {
   registerEkascribeAppProtocol,
 } from './managers/ekascribeWebManager';
 import { registerNetworkIpcHandlers } from './managers/networkManager';
-import {
-  registerApiProxyIpcHandlers,
-  startApiProxy,
-  stopApiProxy,
-} from './managers/apiProxyManager';
 import { registerWhatsappIpcHandlers, initWhatsAppAutoConnect } from './managers/whatsappManager';
 import { registerPdfIpcHandlers } from './managers/pdfManager';
 import { registerNotificationIpcHandlers, showNotification, showPermissionPromptIfNeeded } from './managers/notificationManager';
@@ -353,12 +348,14 @@ function openSettingsWindow(): void {
       maximizable: false,
       title: 'Settings',
       webPreferences: {
-        preload: path.join(__dirname, '../preload/preload.js'),
+        preload: path.join(__dirname, 'preload.js'),
         contextIsolation: true,
         nodeIntegration: false,
+        sandbox: true,
       },
     });
     settingsWindowRef = win;
+    attachNavigationGuards(win);
     win.on('closed', () => { settingsWindowRef = null; });
     win.loadURL(`${baseUrl}/settings`);
   }).catch((err) => {
@@ -642,6 +639,57 @@ function registerDeepLinkProtocol() {
   app.setAsDefaultProtocolClient(DEEP_LINK_PROTOCOL);
 }
 
+/**
+ * Origins the app's windows are allowed to navigate to from the renderer side. Everything
+ * the app legitimately loads (`app://ekascribe`, the login renderer, the Vite dev server)
+ * is loaded by the main process via `loadURL`/`loadFile`, which never fires `will-navigate`
+ * — so renderer-initiated navigation only ever needs same-app origins.
+ */
+function isTrustedRendererNavigation(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.origin === getEkascribeAppOrigin()) return true;
+    if (
+      MAIN_WINDOW_VITE_DEV_SERVER_URL &&
+      parsed.origin === new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL).origin
+    ) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Keeps a window pinned to app content: renderer navigation to a foreign origin is
+ * cancelled (http/https targets open in the OS browser instead), and `window.open` /
+ * target=_blank never spawns a new Electron window — without this, a popup inherits a
+ * full-privilege renderer pointed at arbitrary content.
+ */
+function attachNavigationGuards(win: BrowserWindow): void {
+  win.webContents.on('will-navigate', (event, url) => {
+    if (isTrustedRendererNavigation(url)) return;
+    event.preventDefault();
+    console.warn('[security] blocked renderer navigation to', url);
+    try {
+      const { protocol } = new URL(url);
+      if (protocol === 'https:' || protocol === 'http:') void shell.openExternal(url);
+    } catch {
+      // malformed URL — nothing to open
+    }
+  });
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const { protocol } = new URL(url);
+      if (protocol === 'https:' || protocol === 'http:') void shell.openExternal(url);
+    } catch {
+      // malformed URL — nothing to open
+    }
+    return { action: 'deny' };
+  });
+}
+
 const createWindow = async () => {
   // On Windows, wasOpenedAtLogin is always false — detect via the arg we embed
   // in the login item registration. On macOS the OS sets it natively.
@@ -659,9 +707,13 @@ const createWindow = async () => {
     backgroundColor: '#fcfcfc',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
     },
   });
   mainWindowRef = mainWindow;
+  attachNavigationGuards(mainWindow);
   mainWindow.once('ready-to-show', () => {
     if (mainWindow.isDestroyed()) return;
     if (wasOpenedAtLogin) {
@@ -735,7 +787,6 @@ const createWindow = async () => {
   if (isAuthenticated) {
     try {
       // Idempotent — a no-op unless the `ready` handler's start failed or was skipped.
-      await startApiProxy();
       await startEkascribeWeb();
       // Load the `app://` origin, not the loopback server behind it — the page's origin is
       // what the API allowlists, and loading loopback directly would hand it the wrong one.
@@ -1241,15 +1292,8 @@ app.on('ready', async () => {
   });
   // registerProxyProtocolHandler();
   // Must be handled before any window loads — the main window's very first navigation is
-  // an `app://ekascribe` URL.
+  // an `app://ekascribe` URL, and its API paths are forwarded to the upstream from here.
   registerEkascribeAppProtocol();
-  // Must be listening before any window loads: the embedded web app addresses it for
-  // every backend call from its very first render.
-  try {
-    await startApiProxy();
-  } catch (error) {
-    console.error('[main] failed to start API proxy:', error);
-  }
   setupAutoUpdates(logOverlayHelper, () => mainWindowRef);
   // setTimeout(() => { // mock auto update check function
   //   isUpdateAvailable = true;
@@ -1270,7 +1314,6 @@ app.on('ready', async () => {
   registerNativeBottomViewIpcHandlers();
   registerRecordingIpcHandlers();
   registerEkascribeWebIpcHandlers();
-  registerApiProxyIpcHandlers();
   registerNetworkIpcHandlers();
   registerWhatsappIpcHandlers();
   registerPdfIpcHandlers();
@@ -1749,7 +1792,6 @@ app.on('will-quit', () => {
   tray = null;
   removeOwnerPidFile();
   unregisterProxyProtocolHandler();
-  void stopApiProxy();
   void stopEkascribeWeb();
   cancelDeferredHelperRestart();
   // Stdio bridge ties helper lifecycle to Electron: tear them down explicitly
